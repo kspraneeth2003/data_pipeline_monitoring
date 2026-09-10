@@ -1,0 +1,18 @@
+-- DPM_SRC_BILLING.SILVER - cleaned/typed billing invoices, fed by bronze via
+-- TASK_BRONZE_TO_SILVER_INVOICES (see bronze.sql). Feeds the gold 360 view
+-- (see ../dpm_customer_360/gold.sql).
+
+CREATE SCHEMA IF NOT EXISTS DPM_SRC_BILLING.SILVER;
+
+CREATE TABLE IF NOT EXISTS DPM_SRC_BILLING.SILVER.INVOICES (
+  INVOICE_ID NUMBER,
+  CUSTOMER_ID NUMBER,
+  AMOUNT NUMBER(12,2),
+  STATUS STRING,
+  INVOICE_DATE DATE,
+  UPDATED_AT TIMESTAMP_NTZ
+) COMMENT = 'Silver: cleaned/typed billing invoices';
+
+CREATE STREAM IF NOT EXISTS DPM_SRC_BILLING.SILVER.INVOICES_STREAM
+  ON TABLE DPM_SRC_BILLING.SILVER.INVOICES
+  COMMENT = 'Captures changes to silver billing invoices for gold refresh';

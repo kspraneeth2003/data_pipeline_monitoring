@@ -1,0 +1,17 @@
+-- DPM_SRC_CRM.SILVER - cleaned/typed CRM customers, fed by bronze via
+-- TASK_BRONZE_TO_SILVER_CUSTOMERS (see bronze.sql). Feeds the gold 360 view
+-- (see ../dpm_customer_360/gold.sql).
+
+CREATE SCHEMA IF NOT EXISTS DPM_SRC_CRM.SILVER;
+
+CREATE TABLE IF NOT EXISTS DPM_SRC_CRM.SILVER.CUSTOMERS (
+  CUSTOMER_ID NUMBER,
+  FULL_NAME STRING,
+  EMAIL STRING,
+  SIGNUP_DATE DATE,
+  UPDATED_AT TIMESTAMP_NTZ
+) COMMENT = 'Silver: cleaned/typed CRM customers';
+
+CREATE STREAM IF NOT EXISTS DPM_SRC_CRM.SILVER.CUSTOMERS_STREAM
+  ON TABLE DPM_SRC_CRM.SILVER.CUSTOMERS
+  COMMENT = 'Captures changes to silver CRM customers for gold refresh';

@@ -1,0 +1,19 @@
+-- DPM_SRC_INVENTORY.SILVER - cleaned/typed product inventory snapshot, fed by
+-- bronze via TASK_BRONZE_TO_SILVER_PRODUCTS (see bronze.sql). Feeds the gold
+-- stock summary (see ../dpm_inventory_360/gold.sql).
+
+CREATE SCHEMA IF NOT EXISTS DPM_SRC_INVENTORY.SILVER;
+
+CREATE TABLE IF NOT EXISTS DPM_SRC_INVENTORY.SILVER.PRODUCTS (
+  PRODUCT_ID NUMBER,
+  PRODUCT_NAME STRING,
+  CATEGORY STRING,
+  UNIT_PRICE NUMBER(10,2),
+  QUANTITY_ON_HAND NUMBER,
+  WAREHOUSE_ID STRING,
+  UPDATED_AT TIMESTAMP_NTZ
+) COMMENT = 'Silver: cleaned/typed product inventory snapshot';
+
+CREATE STREAM IF NOT EXISTS DPM_SRC_INVENTORY.SILVER.PRODUCTS_STREAM
+  ON TABLE DPM_SRC_INVENTORY.SILVER.PRODUCTS
+  COMMENT = 'Captures changes to silver products for gold refresh';

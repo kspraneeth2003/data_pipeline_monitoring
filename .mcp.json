@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "snowflake": {
+      "command": "uvx",
+      "args": [
+        "snowflake-labs-mcp",
+        "--connection-name",
+        "default",
+        "--service-config-file",
+        "/Users/kotam/Documents/dpm/.mcp/snowflake_service_config.yaml"
+      ],
+      "env": {
+        "SNOWFLAKE_HOME": "/Users/kotam/Documents/dpm/.mcp"
+      }
+    }
+  }
+}

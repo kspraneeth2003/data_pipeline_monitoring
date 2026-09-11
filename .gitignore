@@ -1,0 +1,28 @@
+# dependencies
+node_modules
+
+# frontend build output
+frontend/dist
+
+# python
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+backend/*.egg-info
+*.pyc
+
+# env files (secrets)
+.env
+.env*.local
+backend/.env
+frontend/.env
+
+# snowflake mcp credentials
+.mcp/
+
+# misc
+.DS_Store
+*.pem
+*.p8
+*.log
+npm-debug.log*

@@ -11,7 +11,7 @@ export function NewCheck() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.listConnectors(), api.getDatabase(slug, dbSlug)])
+    Promise.all([api.listProjectConnectors(slug), api.getDatabase(slug, dbSlug)])
       .then(([c, d]) => {
         setConnectors(c);
         setDatabase(d);
@@ -52,15 +52,15 @@ export function NewCheck() {
 
       {connectors.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-surface px-6 py-10 text-center">
-          <h2 className="text-base font-medium text-foreground">No connectors yet</h2>
+          <h2 className="text-base font-medium text-foreground">No connections yet</h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">
-            A check needs a connector to query. Connectors are shared across all projects.
+            A check needs a connection to query through.
           </p>
           <Link
-            to="/connectors"
+            to={`/projects/${slug}/connections`}
             className="mt-5 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground shadow-sm transition-colors hover:bg-accent-hover"
           >
-            Add a connector
+            Add a connection
           </Link>
         </div>
       ) : (

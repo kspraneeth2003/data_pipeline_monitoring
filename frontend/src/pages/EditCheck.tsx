@@ -12,7 +12,7 @@ export function EditCheck() {
   useEffect(() => {
     if (!id) return;
     api.getCheck(id).then(setCheck);
-    api.listConnectors().then(setConnectors);
+    api.listProjectConnectors(slug).then(setConnectors);
   }, [id]);
 
   if (!check || !connectors) return null;

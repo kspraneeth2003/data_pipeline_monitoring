@@ -19,7 +19,7 @@ export function NewDatabase() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.getProject(slug), api.listConnectors()])
+    Promise.all([api.getProject(slug), api.listProjectConnectors(slug)])
       .then(([p, c]) => {
         setProject(p);
         setConnectors(c);
@@ -82,22 +82,22 @@ export function NewDatabase() {
 
       {connectors.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-surface px-6 py-10 text-center">
-          <h2 className="text-base font-medium text-foreground">No connectors yet</h2>
+          <h2 className="text-base font-medium text-foreground">No connections yet</h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">
-            A database is reached through a connector. Connectors are shared across all projects.
+            A database is reached through a connection, and {project?.name ?? "this project"} has none yet.
           </p>
           <Link
-            to="/connectors"
+            to={`/projects/${slug}/connections`}
             className="mt-5 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground shadow-sm transition-colors hover:bg-accent-hover"
           >
-            Add a connector
+            Add a connection
           </Link>
         </div>
       ) : (
         <form onSubmit={submit} className="space-y-5 rounded-xl border border-border bg-surface p-6">
           <div>
             <label htmlFor="connector" className="block text-sm font-medium text-foreground">
-              Connector
+              Connection
             </label>
             <select
               id="connector"

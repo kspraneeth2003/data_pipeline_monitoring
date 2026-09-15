@@ -124,11 +124,11 @@ export function ProjectSettings() {
       </form>
 
       <section className="mb-8 rounded-xl border border-border bg-surface p-6">
-        <h2 className="text-sm font-semibold text-foreground">Connectors in use</h2>
+        <h2 className="text-sm font-semibold text-foreground">Connections in use</h2>
         <p className="mt-1 text-sm text-zinc-500">
-          Reached by this project's databases. Connectors are shared across projects, so they are managed{" "}
-          <Link to="/connectors" className="text-accent hover:underline">
-            at the workspace level
+          Reached by this project's databases.{" "}
+          <Link to={`/projects/${slug}/connections`} className="text-accent hover:underline">
+            Manage connections
           </Link>
           .
         </p>

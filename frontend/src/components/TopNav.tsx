@@ -3,7 +3,7 @@ import { Link, matchPath, useLocation } from "react-router-dom";
 /**
  * Three modes, because the useful actions differ by altitude.
  *
- * Workspace level offers what spans projects (Projects, Connectors). Inside a
+ * Workspace level lists projects. Inside a
  * project the sections become its databases and tickets, and the primary action
  * is "Add database". Inside a database it becomes that database's checks, and
  * the primary action is "New check" - which only makes sense once there is a
@@ -35,11 +35,11 @@ export function TopNav() {
       ? [
           { href: base, label: "Databases", exact: true },
           { href: `${base}/tickets`, label: "Tickets" },
+          { href: `${base}/connections`, label: "Connections" },
           { href: `${base}/settings`, label: "Settings" },
         ]
       : [
           { href: "/", label: "Projects", exact: true },
-          { href: "/connectors", label: "Connectors" },
         ];
 
   return (

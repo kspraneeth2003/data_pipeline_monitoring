@@ -13,9 +13,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export type ProbeResult = {
+  account: string | null;
+  username: string | null;
+  role: string | null;
+  warehouse: string | null;
+  databases: string[];
+};
+
 export type Connector = {
   id: string;
   name: string;
+  project_id: string;
   type: string;
   config: Record<string, unknown>;
   comment: string | null;
@@ -169,7 +178,14 @@ export const api = {
   deleteCheck: (id: string) => request<{ ok: true }>(`/api/checks/${id}`, { method: "DELETE" }),
   runCheck: (id: string) => request<{ run_id: string }>(`/api/checks/${id}/run`, { method: "POST" }),
 
-  listConnectors: () => request<Connector[]>("/api/connectors"),
+  probeConnection: (payload: Record<string, unknown>) =>
+    request<ProbeResult>("/api/connectors/probe", { method: "POST", body: JSON.stringify(payload) }),
+  setupProject: (payload: Record<string, unknown>) =>
+    request<Project>("/api/projects/setup", { method: "POST", body: JSON.stringify(payload) }),
+  listProjectConnectors: (key: string) => request<Connector[]>(`/api/projects/${key}/connectors`),
+
+  listConnectors: (projectId?: string) =>
+    request<Connector[]>(`/api/connectors${projectId ? `?project_id=${projectId}` : ""}`),
   createConnector: (payload: Record<string, unknown>) =>
     request<Connector>("/api/connectors", { method: "POST", body: JSON.stringify(payload) }),
   deleteConnector: (id: string) => request<{ ok: true }>(`/api/connectors/${id}`, { method: "DELETE" }),

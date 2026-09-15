@@ -8,7 +8,7 @@ import { ProjectSettings } from "./pages/ProjectSettings";
 import { NewDatabase } from "./pages/NewDatabase";
 import { DatabaseChecks } from "./pages/DatabaseChecks";
 import { DatabaseSettings } from "./pages/DatabaseSettings";
-import { Connectors } from "./pages/Connectors";
+import { ProjectConnections } from "./pages/ProjectConnections";
 import { CheckDetail } from "./pages/CheckDetail";
 import { NewCheck } from "./pages/NewCheck";
 import { EditCheck } from "./pages/EditCheck";
@@ -18,8 +18,8 @@ import { EditCheck } from "./pages/EditCheck";
  * always says where you are and every level above is reachable by trimming the
  * path.
  *
- * Connectors sit outside the tree because one connector serves many databases
- * across many projects.
+ * Connections live inside a project too: connecting a warehouse is part of
+ * setting a project up, not a separate administrative step done elsewhere.
  */
 export default function App() {
   return (
@@ -31,6 +31,7 @@ export default function App() {
         <Route path="/projects/:slug" element={<ProjectOverview />} />
         <Route path="/projects/:slug/tickets" element={<ProjectTickets />} />
         <Route path="/projects/:slug/settings" element={<ProjectSettings />} />
+        <Route path="/projects/:slug/connections" element={<ProjectConnections />} />
 
         <Route path="/projects/:slug/databases/new" element={<NewDatabase />} />
         <Route path="/projects/:slug/databases/:dbSlug" element={<DatabaseChecks />} />
@@ -39,9 +40,9 @@ export default function App() {
         <Route path="/projects/:slug/databases/:dbSlug/checks/:id" element={<CheckDetail />} />
         <Route path="/projects/:slug/databases/:dbSlug/checks/:id/edit" element={<EditCheck />} />
 
-        <Route path="/connectors" element={<Connectors />} />
-
-        {/* Pre-hierarchy URLs. Bookmarks should land somewhere useful, not 404. */}
+        {/* Pre-hierarchy URLs. Bookmarks should land somewhere useful, not 404.
+            /connectors is gone entirely - connections now belong to a project. */}
+        <Route path="/connectors" element={<Navigate to="/" replace />} />
         <Route path="/projects/:slug/checks/*" element={<Navigate to=".." relative="path" replace />} />
         <Route path="/checks/*" element={<Navigate to="/" replace />} />
         <Route path="/tickets" element={<Navigate to="/" replace />} />

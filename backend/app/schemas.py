@@ -32,12 +32,32 @@ class ConnectorOut(BaseModel):
     checks_count: int = 0
 
 
+class ProjectCreate(BaseModel):
+    name: str
+    slug: str | None = None
+    description: str | None = None
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    description: str | None = None
+
+
+class ProjectRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    slug: str
+    name: str
+
+
 class CheckCreate(BaseModel):
     name: str
     description: str | None = None
     type: str
     schedule: str
     enabled: bool = True
+    project_id: str
     connector_id: str
     secondary_connector_id: str | None = None
     config: dict[str, Any]
@@ -49,6 +69,7 @@ class CheckUpdate(BaseModel):
     type: str | None = None
     schedule: str | None = None
     enabled: bool | None = None
+    project_id: str | None = None
     connector_id: str | None = None
     secondary_connector_id: str | None = None
     config: dict[str, Any] | None = None
@@ -110,11 +131,13 @@ class CheckOut(BaseModel):
     type: str
     schedule: str
     enabled: bool
+    project_id: str
     connector_id: str
     secondary_connector_id: str | None
     config: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    project: ProjectRef
     connector: ConnectorRef
     secondary_connector: ConnectorRef | None = None
     runs: list[CheckRunOut] = []
@@ -129,3 +152,33 @@ class TicketWithContextOut(TicketOut):
 class TicketUpdate(BaseModel):
     status: str | None = None
     assignee: str | None = None
+
+
+class ProjectHealth(BaseModel):
+    """Rollup shown on a project card. Ordered so the worst state wins: a
+    project with one failing check reads as failing, not as "mostly passing"."""
+
+    total_checks: int
+    passing: int
+    failing: int
+    erroring: int
+    never_run: int
+    disabled: int
+    open_tickets: int
+    last_run_at: datetime | None
+    status: str  # PASSED | FAILED | ERROR | NONE
+
+
+class ProjectOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    slug: str
+    name: str
+    description: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectWithHealthOut(ProjectOut):
+    health: ProjectHealth

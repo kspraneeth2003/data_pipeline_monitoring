@@ -24,6 +24,7 @@ class CheckType(str, enum.Enum):
     NULL_RATE = "NULL_RATE"
     SCHEMA_DRIFT = "SCHEMA_DRIFT"
     CROSS_SOURCE_PARITY = "CROSS_SOURCE_PARITY"
+    BRONZE_TO_SILVER_PARITY = "BRONZE_TO_SILVER_PARITY"
 
 
 class RunStatus(str, enum.Enum):
@@ -44,6 +45,29 @@ class TicketPriority(str, enum.Enum):
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
+
+
+class Project(Base):
+    """A monitored data domain - usually one source system or pipeline.
+
+    Checks belong to exactly one project. Connectors deliberately do *not*:
+    a single Snowflake account legitimately serves several projects, so
+    connectors stay workspace-level and projects reference them.
+    """
+
+    __tablename__ = "projects"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
+    slug: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    checks: Mapped[list["Check"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Connector(Base):
@@ -70,6 +94,8 @@ class Check(Base):
     schedule: Mapped[str] = mapped_column(String)
     enabled: Mapped[bool] = mapped_column(default=True)
 
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+
     connector_id: Mapped[str] = mapped_column(ForeignKey("connectors.id"))
     secondary_connector_id: Mapped[str | None] = mapped_column(ForeignKey("connectors.id"), nullable=True)
 
@@ -78,6 +104,7 @@ class Check(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    project: Mapped["Project"] = relationship(back_populates="checks")
     connector: Mapped["Connector"] = relationship(foreign_keys=[connector_id], back_populates="checks")
     secondary_connector: Mapped["Connector | None"] = relationship(foreign_keys=[secondary_connector_id])
     runs: Mapped[list["CheckRun"]] = relationship(back_populates="check", cascade="all, delete-orphan")

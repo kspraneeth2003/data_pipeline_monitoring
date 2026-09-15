@@ -55,6 +55,9 @@ def create_check(payload: schemas.CheckCreate, db: Session = Depends(get_db)):
     if payload.type == "CROSS_SOURCE_PARITY" and not payload.secondary_connector_id:
         raise HTTPException(400, "CROSS_SOURCE_PARITY checks require a secondary_connector_id")
 
+    if not db.query(models.Project).filter_by(id=payload.project_id).first():
+        raise HTTPException(400, "project_id does not match an existing project")
+
     config = _validate_config(payload.type, payload.config)
 
     check = models.Check(
@@ -64,6 +67,7 @@ def create_check(payload: schemas.CheckCreate, db: Session = Depends(get_db)):
         type=payload.type,
         schedule=payload.schedule,
         enabled=payload.enabled,
+        project_id=payload.project_id,
         connector_id=payload.connector_id,
         secondary_connector_id=payload.secondary_connector_id,
         config=config,

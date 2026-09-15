@@ -189,6 +189,9 @@ def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> Chec
     duplicate_keys = _as_int(row["SILVER_DUPLICATE_KEYS"])
     surplus_rows = _as_int(row["SILVER_SURPLUS_ROWS"])
     value_mismatches = _as_int(row["VALUE_MISMATCHES"])
+    # Landed in bronze after the cutoff and already merged - normal pipeline
+    # latency, reported for visibility but never a failure.
+    silver_ahead = _as_int(row.get("SILVER_AHEAD_OF_SETTLED"))
 
     # Per-column mismatch counts, reported under the logical column name so a
     # failure points at the column rather than at an opaque total.
@@ -219,6 +222,7 @@ def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> Chec
         "missingInSilver": missing,
         "extraInSilver": extra,
         "valueMismatches": value_mismatches,
+        "silverAheadOfSettled": silver_ahead,
         "mismatchByColumn": mismatch_by_column,
         "lagMinutes": config.lagMinutes,
         "thresholds": {
@@ -269,8 +273,9 @@ def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> Chec
         metrics=metrics,
         message=(
             f"{config.bronzeObject} -> {config.silverObject}: "
-            f"{metrics['bronzeDistinctKeys']} bronze key(s) map 1:1 onto "
+            f"{metrics['bronzeDistinctKeys']} settled bronze key(s) map 1:1 onto "
             f"{metrics['silverRows']} silver row(s); no duplicates, no loss"
+            + (f" ({silver_ahead} still settling)" if silver_ahead else "")
             + (f", {len(config.valueColumns)} value column(s) agree" if config.valueColumns else "")
         ),
     )

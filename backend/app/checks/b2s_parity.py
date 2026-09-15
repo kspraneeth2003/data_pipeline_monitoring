@@ -20,10 +20,14 @@ Determinism is the whole game here. Four things make the result reproducible:
   bronze and silver are read as of the *same* instant. Counting them in two
   round-trips is the classic source of phantom "missing row" alerts when a
   1-minute MERGE task fires in between.
-* **A settling lag.** Bronze rows that landed seconds ago legitimately have not
-  been merged yet. `lagMinutes` excludes them, so in-flight rows are never
-  counted as loss. This is the difference between a check that alerts on real
-  breakage and one that alerts on normal pipeline latency.
+* **A settling lag, applied symmetrically.** Bronze rows that landed seconds ago
+  legitimately have not been merged yet, so `lagMinutes` excludes them and
+  in-flight rows are never counted as loss. But the lag has to cut both ways: a
+  row that landed 30s ago and *was* already merged would otherwise show up as a
+  key silver invented from nothing. `bronze_pending` holds those keys back from
+  the extra-in-silver count and reports them separately as
+  `silverAheadOfSettled`. Filtering one side only trades false "missing" alerts
+  for false "extra" ones.
 * **Symmetric normalization.** Bronze is untyped VARIANT, silver is typed. Each
   column carries an explicit expression for *both* sides, so `'1'` vs `1` and
   `'2026-05-02'` vs `DATE` never register as a mismatch.
@@ -102,6 +106,11 @@ def build_parity_sql(config: BronzeToSilverParityConfig) -> str:
     partition_by = ", ".join(key_aliases)
 
     join_condition = " AND ".join(f"b.{a} IS NOT DISTINCT FROM s.{a}" for a in key_aliases)
+    # Pending rows are only consulted for silver-side keys, so they join to s.
+    pending_condition = " AND ".join(f"pnd.{a} IS NOT DISTINCT FROM s.{a}" for a in key_aliases)
+    bronze_keys_only = ",\n      ".join(
+        f"{col.bronze} AS {alias}" for col, alias in zip(config.keyColumns, key_aliases)
+    )
 
     # Per-column mismatch counters. This is what turns "1190 rows disagree" into
     # "WAREHOUSE_ID disagrees on 1190 rows" - i.e. into something a human can act on.
@@ -140,6 +149,14 @@ bronze_latest AS (
   FROM bronze_all
   QUALIFY ROW_NUMBER() OVER (PARTITION BY {partition_by} ORDER BY {order_by}) = 1
 ),
+bronze_pending AS (
+  -- Rows that landed after the cutoff. They are excluded from the settled set
+  -- above, but the MERGE task may already have written them to silver - so
+  -- without this they would read as keys silver invented out of nothing.
+  SELECT DISTINCT {bronze_keys_only}, 1 AS _P_PRESENT
+  FROM {config.bronzeObject}{at}
+  WHERE {config.bronzeLoadedAtColumn} > (SELECT CUTOFF FROM bounds)
+),
 silver_all AS (
   SELECT
       {silver_keys}{silver_values}
@@ -161,10 +178,12 @@ joined AS (
     b._B_PRESENT IS NOT NULL AS IN_BRONZE,
     s._S_PRESENT IS NOT NULL AS IN_SILVER,
     (b._B_PRESENT IS NOT NULL AND s._S_PRESENT IS NOT NULL) AS IN_BOTH,
+    pnd._P_PRESENT IS NOT NULL AS IN_PENDING,
     {value_fingerprint_b} AS B_FP,
     {value_fingerprint_s} AS S_FP{joined_values}
   FROM bronze_latest b
   FULL OUTER JOIN silver_one s ON {join_condition}
+  LEFT JOIN bronze_pending pnd ON {pending_condition}
 )
 SELECT
   (SELECT COUNT(*) FROM bronze_all)                          AS BRONZE_ROWS_SETTLED,
@@ -175,11 +194,12 @@ SELECT
   (SELECT COALESCE(SUM(_S_ROWS - 1), 0) FROM silver_counts WHERE _S_ROWS > 1)
                                                              AS SILVER_SURPLUS_ROWS,
   COUNT_IF(IN_BRONZE AND NOT IN_SILVER)                      AS MISSING_IN_SILVER,
-  COUNT_IF(IN_SILVER AND NOT IN_BRONZE)                      AS EXTRA_IN_SILVER,
+  COUNT_IF(IN_SILVER AND NOT IN_BRONZE AND NOT IN_PENDING)   AS EXTRA_IN_SILVER,
+  COUNT_IF(IN_SILVER AND NOT IN_BRONZE AND IN_PENDING)       AS SILVER_AHEAD_OF_SETTLED,
   COUNT_IF(IN_BOTH AND B_FP IS DISTINCT FROM S_FP)           AS VALUE_MISMATCHES,
   ARRAY_SLICE(ARRAY_AGG(CASE WHEN IN_BRONZE AND NOT IN_SILVER THEN KEY_STR END), 0, {sample})
                                                              AS SAMPLE_MISSING,
-  ARRAY_SLICE(ARRAY_AGG(CASE WHEN IN_SILVER AND NOT IN_BRONZE THEN KEY_STR END), 0, {sample})
+  ARRAY_SLICE(ARRAY_AGG(CASE WHEN IN_SILVER AND NOT IN_BRONZE AND NOT IN_PENDING THEN KEY_STR END), 0, {sample})
                                                              AS SAMPLE_EXTRA,
   ARRAY_SLICE(ARRAY_AGG(CASE WHEN IN_BOTH AND B_FP IS DISTINCT FROM S_FP THEN KEY_STR END), 0, {sample})
                                                              AS SAMPLE_VALUE_MISMATCH,

@@ -9,7 +9,7 @@ import { EnabledToggle } from "../components/EnabledToggle";
 import { DeleteButton } from "../components/DeleteButton";
 
 export function CheckDetail() {
-  const { id, slug = "" } = useParams<{ id: string; slug: string }>();
+  const { id, slug = "", dbSlug = "" } = useParams<{ id: string; slug: string; dbSlug: string }>();
   const navigate = useNavigate();
   const [check, setCheck] = useState<Check | null>(null);
 
@@ -27,8 +27,8 @@ export function CheckDetail() {
         <Breadcrumbs
           items={[
             { label: "Projects", to: "/" },
-            { label: check.project.name, to: `/projects/${slug}` },
-            { label: "Checks", to: `/projects/${slug}/checks` },
+            { label: check.database.project.name, to: `/projects/${slug}` },
+            { label: check.database.name, to: `/projects/${slug}/databases/${dbSlug}` },
             { label: check.name },
           ]}
         />
@@ -65,7 +65,7 @@ export function CheckDetail() {
             <RunNowButton checkId={check.id} onDone={reload} />
             <EnabledToggle checkId={check.id} enabled={check.enabled} onDone={reload} />
             <Link
-              to={`/projects/${slug}/checks/${check.id}/edit`}
+              to={`/projects/${slug}/databases/${dbSlug}/checks/${check.id}/edit`}
               className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
             >
               Edit
@@ -74,7 +74,7 @@ export function CheckDetail() {
               confirmMessage={`Delete check "${check.name}"? This also deletes its run history.`}
               onDelete={async () => {
                 await api.deleteCheck(check.id);
-                navigate(`/projects/${slug}/checks`);
+                navigate(`/projects/${slug}/databases/${dbSlug}`);
               }}
             />
           </div>

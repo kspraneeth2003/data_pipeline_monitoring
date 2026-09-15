@@ -1,23 +1,23 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, type Connector, type Project } from "../lib/api";
+import { api, type Connector, type Database } from "../lib/api";
 import { CheckForm } from "../components/CheckForm";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 
 export function NewCheck() {
-  const { slug = "" } = useParams();
+  const { slug = "", dbSlug = "" } = useParams();
   const [connectors, setConnectors] = useState<Connector[] | null>(null);
-  const [project, setProject] = useState<Project | null>(null);
+  const [database, setDatabase] = useState<Database | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.listConnectors(), api.getProject(slug)])
-      .then(([c, p]) => {
+    Promise.all([api.listConnectors(), api.getDatabase(slug, dbSlug)])
+      .then(([c, d]) => {
         setConnectors(c);
-        setProject(p);
+        setDatabase(d);
       })
       .catch((e) => setError(e.message));
-  }, [slug]);
+  }, [slug, dbSlug]);
 
   if (error) {
     return (
@@ -29,15 +29,15 @@ export function NewCheck() {
     );
   }
 
-  if (!connectors || !project) return null;
+  if (!connectors || !database) return null;
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-10 sm:px-10">
       <Breadcrumbs
         items={[
           { label: "Projects", to: "/" },
-          { label: project.name, to: `/projects/${slug}` },
-          { label: "Checks", to: `/projects/${slug}/checks` },
+          { label: "Project", to: `/projects/${slug}` },
+          { label: database.name, to: `/projects/${slug}/databases/${dbSlug}` },
           { label: "New check" },
         ]}
       />
@@ -45,7 +45,8 @@ export function NewCheck() {
       <header className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">New check</h1>
         <p className="mt-1 text-sm text-zinc-500">
-          This check will belong to <span className="font-medium text-foreground">{project.name}</span>.
+          This check will run against <span className="font-mono font-medium text-foreground">{database.name}</span>.
+          It can still reference objects in sibling databases.
         </p>
       </header>
 
@@ -63,7 +64,7 @@ export function NewCheck() {
           </Link>
         </div>
       ) : (
-        <CheckForm connectors={connectors} projectId={project.id} projectSlug={slug} />
+        <CheckForm connectors={connectors} databaseId={database.id} projectSlug={slug} databaseSlug={dbSlug} />
       )}
     </main>
   );

@@ -1,13 +1,13 @@
 import { Link, matchPath, useLocation } from "react-router-dom";
 
 /**
- * Two modes, because the useful actions differ by altitude.
+ * Three modes, because the useful actions differ by altitude.
  *
- * At workspace level the nav offers the things that span projects (Projects,
- * Connectors). Inside a project it switches to that project's own sections and
- * the primary action becomes "New check" - which only makes sense once there is
- * a project to put the check in. Previously that button sat in the global nav
- * with no context for what it would belong to.
+ * Workspace level offers what spans projects (Projects, Connectors). Inside a
+ * project the sections become its databases and tickets, and the primary action
+ * is "Add database". Inside a database it becomes that database's checks, and
+ * the primary action is "New check" - which only makes sense once there is a
+ * database to run it against.
  */
 export function TopNav() {
   const location = useLocation();
@@ -17,19 +17,30 @@ export function TopNav() {
   const slug = match?.params.slug;
   // "new" is the create form, not a project.
   const inProject = Boolean(slug) && slug !== "new";
+
+  const dbMatch = matchPath("/projects/:slug/databases/:dbSlug/*", location.pathname);
+  const dbSlug = dbMatch?.params.dbSlug;
+  const inDatabase = inProject && Boolean(dbSlug) && dbSlug !== "new";
   const base = inProject ? `/projects/${slug}` : "";
 
-  const links = inProject
+  const dbBase = `${base}/databases/${dbSlug}`;
+
+  const links = inDatabase
     ? [
-        { href: base, label: "Overview", exact: true },
-        { href: `${base}/checks`, label: "Checks" },
-        { href: `${base}/tickets`, label: "Tickets" },
-        { href: `${base}/settings`, label: "Settings" },
+        { href: base, label: "← Project", exact: true },
+        { href: dbBase, label: "Checks", exact: true },
+        { href: `${dbBase}/settings`, label: "Settings" },
       ]
-    : [
-        { href: "/", label: "Projects", exact: true },
-        { href: "/connectors", label: "Connectors" },
-      ];
+    : inProject
+      ? [
+          { href: base, label: "Databases", exact: true },
+          { href: `${base}/tickets`, label: "Tickets" },
+          { href: `${base}/settings`, label: "Settings" },
+        ]
+      : [
+          { href: "/", label: "Projects", exact: true },
+          { href: "/connectors", label: "Connectors" },
+        ];
 
   return (
     <nav className="sticky top-0 z-10 border-b border-border bg-surface/80 backdrop-blur">
@@ -60,12 +71,19 @@ export function TopNav() {
           );
         })}
 
-        {inProject ? (
+        {inDatabase ? (
           <Link
-            to={`${base}/checks/new`}
+            to={`${dbBase}/checks/new`}
             className="ml-auto rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground shadow-sm transition-colors hover:bg-accent-hover"
           >
             New check
+          </Link>
+        ) : inProject ? (
+          <Link
+            to={`${base}/databases/new`}
+            className="ml-auto rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground shadow-sm transition-colors hover:bg-accent-hover"
+          >
+            Add database
           </Link>
         ) : (
           <Link

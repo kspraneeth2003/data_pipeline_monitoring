@@ -5,7 +5,7 @@ import { CheckForm } from "../components/CheckForm";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 
 export function EditCheck() {
-  const { id, slug = "" } = useParams<{ id: string; slug: string }>();
+  const { id, slug = "", dbSlug = "" } = useParams<{ id: string; slug: string; dbSlug: string }>();
   const [check, setCheck] = useState<Check | null>(null);
   const [connectors, setConnectors] = useState<Connector[] | null>(null);
 
@@ -23,9 +23,9 @@ export function EditCheck() {
         <Breadcrumbs
           items={[
             { label: "Projects", to: "/" },
-            { label: check.project.name, to: `/projects/${slug}` },
-            { label: "Checks", to: `/projects/${slug}/checks` },
-            { label: check.name, to: `/projects/${slug}/checks/${check.id}` },
+            { label: check.database.project.name, to: `/projects/${slug}` },
+            { label: check.database.name, to: `/projects/${slug}/databases/${dbSlug}` },
+            { label: check.name, to: `/projects/${slug}/databases/${dbSlug}/checks/${check.id}` },
             { label: "Edit" },
           ]}
         />
@@ -44,8 +44,9 @@ export function EditCheck() {
             secondary_connector_id: check.secondary_connector_id,
             config: check.config,
           }}
-          projectId={check.project_id}
+          databaseId={check.database_id}
           projectSlug={slug}
+          databaseSlug={dbSlug}
         />
       </div>
     </div>

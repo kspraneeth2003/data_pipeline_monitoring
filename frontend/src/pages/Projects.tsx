@@ -29,7 +29,7 @@ export function Projects() {
       <header className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">Projects</h1>
         <p className="mt-1 text-sm text-zinc-500">
-          Each project groups the checks for one source system or pipeline.
+          Each project is a data product — the databases that together serve one domain.
           {needsAttention.length > 0 && (
             <>
               {" "}
@@ -53,8 +53,8 @@ export function Projects() {
         <div className="rounded-xl border border-dashed border-border bg-surface px-6 py-12 text-center">
           <h2 className="text-base font-medium text-foreground">No projects yet</h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">
-            A project is one source system or pipeline you want to monitor — CRM, Billing, Inventory.
-            Checks live inside it.
+            A project is a data product — Customer 360, Inventory. Inside it you add the databases it
+            spans, and checks live inside those.
           </p>
           <Link
             to="/projects/new"
@@ -85,6 +85,10 @@ export function Projects() {
               )}
 
               <dl className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-zinc-500">
+                <div className="flex gap-1">
+                  <dt>Databases</dt>
+                  <dd className="font-medium text-foreground">{project.databases.length}</dd>
+                </div>
                 <div className="flex gap-1">
                   <dt>Checks</dt>
                   <dd className="font-medium text-foreground">{project.health.total_checks}</dd>

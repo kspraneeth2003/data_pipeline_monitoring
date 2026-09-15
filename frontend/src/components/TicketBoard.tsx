@@ -74,7 +74,7 @@ function TicketCard({
       <div className="mt-1 font-medium text-foreground">{ticket.title}</div>
       <p className="mt-1 line-clamp-3 whitespace-pre-line text-xs text-zinc-500 dark:text-zinc-400">{ticket.description}</p>
       <div className="mt-3 flex items-center justify-between text-xs">
-        <Link to={`/projects/${projectSlug}/checks/${ticket.check_id}`} className="text-zinc-500 hover:text-accent dark:text-zinc-400">
+        <Link to={`/projects/${projectSlug}/databases/${ticket.database_slug}/checks/${ticket.check_id}`} className="text-zinc-500 hover:text-accent dark:text-zinc-400">
           {ticket.check_name}
         </Link>
         {ticket.assignee ? (

@@ -26,13 +26,15 @@ function configFieldToString(value: unknown, kind: string): string {
 export function CheckForm({
   connectors,
   initial,
-  projectId,
+  databaseId,
   projectSlug,
+  databaseSlug,
 }: {
   connectors: ConnectorOption[];
   initial?: InitialCheck;
-  projectId: string;
+  databaseId: string;
   projectSlug: string;
+  databaseSlug: string;
 }) {
   const navigate = useNavigate();
   const isEdit = Boolean(initial);
@@ -102,14 +104,14 @@ export function CheckForm({
         type,
         schedule,
         enabled,
-        project_id: projectId,
+        database_id: databaseId,
         connector_id: connectorId,
         secondary_connector_id: meta.needsSecondaryConnector ? secondaryConnectorId : undefined,
         config,
       };
 
       const result = isEdit ? await api.updateCheck(initial!.id, payload) : await api.createCheck(payload);
-      navigate(`/projects/${projectSlug}/checks/${result.id}`);
+      navigate(`/projects/${projectSlug}/databases/${databaseSlug}/checks/${result.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, type Check, type Project } from "../lib/api";
+import { api, type Project } from "../lib/api";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { DeleteButton } from "../components/DeleteButton";
 
@@ -8,7 +8,6 @@ export function ProjectSettings() {
   const { slug = "" } = useParams();
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
-  const [checks, setChecks] = useState<Check[]>([]);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
@@ -16,10 +15,10 @@ export function ProjectSettings() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.getProject(slug), api.listProjectChecks(slug)])
-      .then(([p, c]) => {
+    api
+      .getProject(slug)
+      .then((p) => {
         setProject(p);
-        setChecks(c);
         setName(p.name);
         setDescription(p.description ?? "");
       })
@@ -56,7 +55,9 @@ export function ProjectSettings() {
   // Which connectors this project depends on. Connectors are workspace-level,
   // so this is a read-only view of what it uses rather than something to edit
   // here - that would imply per-project credentials, which is not the model.
-  const connectorsInUse = Array.from(new Map(checks.map((c) => [c.connector.id, c.connector])).values());
+  const connectorsInUse = Array.from(
+    new Map(project.databases.map((d) => [d.connector.id, d.connector])).values()
+  );
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-10 sm:px-10">
@@ -125,14 +126,14 @@ export function ProjectSettings() {
       <section className="mb-8 rounded-xl border border-border bg-surface p-6">
         <h2 className="text-sm font-semibold text-foreground">Connectors in use</h2>
         <p className="mt-1 text-sm text-zinc-500">
-          Connectors are shared across projects, so they are managed{" "}
+          Reached by this project's databases. Connectors are shared across projects, so they are managed{" "}
           <Link to="/connectors" className="text-accent hover:underline">
             at the workspace level
           </Link>
           .
         </p>
         {connectorsInUse.length === 0 ? (
-          <p className="mt-3 text-sm text-zinc-500">None — this project has no checks yet.</p>
+          <p className="mt-3 text-sm text-zinc-500">None — this project has no databases yet.</p>
         ) : (
           <ul className="mt-3 space-y-1.5">
             {connectorsInUse.map((connector) => (
@@ -148,12 +149,14 @@ export function ProjectSettings() {
       <section className="rounded-xl border border-red-200 bg-red-50/50 p-6 dark:border-red-900 dark:bg-red-950/20">
         <h2 className="text-sm font-semibold text-red-700 dark:text-red-400">Danger zone</h2>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          Deleting {project.name} also deletes its {checks.length} check{checks.length === 1 ? "" : "s"} and all of
-          their run history and tickets.
+          Deleting {project.name} also deletes its {project.databases.length} database
+          {project.databases.length === 1 ? "" : "s"}, their {project.health.total_checks} check
+          {project.health.total_checks === 1 ? "" : "s"}, and all run history and tickets. The databases in
+          Snowflake are not touched.
         </p>
         <div className="mt-4">
           <DeleteButton
-            confirmMessage={`Delete project "${project.name}"? This deletes ${checks.length} check(s), their run history, and their tickets.`}
+            confirmMessage={`Delete project "${project.name}"? This deletes ${project.databases.length} database link(s), ${project.health.total_checks} check(s), and all run history and tickets. The databases in Snowflake are not touched.`}
             onDelete={async () => {
               await api.deleteProject(slug);
               navigate("/");

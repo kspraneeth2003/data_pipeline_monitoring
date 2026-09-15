@@ -51,6 +51,9 @@ export type TicketWithContext = Ticket & {
   check_run_id: string;
   check_id: string;
   check_name: string;
+  database_slug: string;
+  database_name: string;
+  project_slug: string;
 };
 
 export type CheckRun = {
@@ -77,6 +80,19 @@ export type ProjectHealth = {
   status: "PASSED" | "FAILED" | "ERROR" | "NONE";
 };
 
+export type Database = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  project_id: string;
+  connector_id: string;
+  connector: { id: string; name: string };
+  created_at: string;
+  updated_at: string;
+  health: ProjectHealth;
+};
+
 export type Project = {
   id: string;
   slug: string;
@@ -85,6 +101,7 @@ export type Project = {
   created_at: string;
   updated_at: string;
   health: ProjectHealth;
+  databases: Database[];
 };
 
 export type Check = {
@@ -94,8 +111,13 @@ export type Check = {
   type: string;
   schedule: string;
   enabled: boolean;
-  project_id: string;
-  project: { id: string; slug: string; name: string };
+  database_id: string;
+  database: {
+    id: string;
+    slug: string;
+    name: string;
+    project: { id: string; slug: string; name: string };
+  };
   connector_id: string;
   secondary_connector_id: string | null;
   config: Record<string, unknown>;
@@ -115,8 +137,28 @@ export const api = {
     request<Project>(`/api/projects/${key}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteProject: (key: string) =>
     request<void>(`/api/projects/${key}`, { method: "DELETE" }),
-  listProjectChecks: (key: string) => request<Check[]>(`/api/projects/${key}/checks`),
   listProjectTickets: (key: string) => request<TicketWithContext[]>(`/api/projects/${key}/tickets`),
+
+  listDatabases: (projectKey: string) => request<Database[]>(`/api/projects/${projectKey}/databases`),
+  getDatabase: (projectKey: string, dbKey: string) =>
+    request<Database>(`/api/projects/${projectKey}/databases/${dbKey}`),
+  createDatabase: (projectKey: string, payload: Record<string, unknown>) =>
+    request<Database>(`/api/projects/${projectKey}/databases`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateDatabase: (projectKey: string, dbKey: string, payload: Record<string, unknown>) =>
+    request<Database>(`/api/projects/${projectKey}/databases/${dbKey}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteDatabase: (projectKey: string, dbKey: string) =>
+    request<void>(`/api/projects/${projectKey}/databases/${dbKey}`, { method: "DELETE" }),
+  listDatabaseChecks: (projectKey: string, dbKey: string) =>
+    request<Check[]>(`/api/projects/${projectKey}/databases/${dbKey}/checks`),
+
+  discoverDatabases: (connectorId: string) =>
+    request<string[]>(`/api/connectors/${connectorId}/databases`),
 
   listChecks: () => request<Check[]>("/api/checks"),
   getCheck: (id: string) => request<Check>(`/api/checks/${id}`),

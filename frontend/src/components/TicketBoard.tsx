@@ -39,7 +39,15 @@ function initials(text: string): string {
   return (parts[0]?.[0] ?? "?").toUpperCase() + (parts[1]?.[0]?.toUpperCase() ?? "");
 }
 
-function TicketCard({ ticket, onChanged }: { ticket: TicketWithContext; onChanged: () => void }) {
+function TicketCard({
+  ticket,
+  onChanged,
+  projectSlug,
+}: {
+  ticket: TicketWithContext;
+  onChanged: () => void;
+  projectSlug: string;
+}) {
   const [busy, setBusy] = useState(false);
 
   async function move(status: TicketWithContext["status"]) {
@@ -66,7 +74,7 @@ function TicketCard({ ticket, onChanged }: { ticket: TicketWithContext; onChange
       <div className="mt-1 font-medium text-foreground">{ticket.title}</div>
       <p className="mt-1 line-clamp-3 whitespace-pre-line text-xs text-zinc-500 dark:text-zinc-400">{ticket.description}</p>
       <div className="mt-3 flex items-center justify-between text-xs">
-        <Link to={`/checks/${ticket.check_id}`} className="text-zinc-500 hover:text-accent dark:text-zinc-400">
+        <Link to={`/projects/${projectSlug}/checks/${ticket.check_id}`} className="text-zinc-500 hover:text-accent dark:text-zinc-400">
           {ticket.check_name}
         </Link>
         {ticket.assignee ? (
@@ -93,7 +101,15 @@ function TicketCard({ ticket, onChanged }: { ticket: TicketWithContext; onChange
   );
 }
 
-export function TicketBoard({ tickets, onChanged }: { tickets: TicketWithContext[]; onChanged: () => void }) {
+export function TicketBoard({
+  tickets,
+  onChange,
+  projectSlug,
+}: {
+  tickets: TicketWithContext[];
+  onChange: () => void;
+  projectSlug: string;
+}) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
       {COLUMNS.map((col) => {
@@ -108,7 +124,7 @@ export function TicketBoard({ tickets, onChanged }: { tickets: TicketWithContext
             </div>
             <div className="space-y-3">
               {columnTickets.map((t) => (
-                <TicketCard key={t.id} ticket={t} onChanged={onChanged} />
+                <TicketCard key={t.id} ticket={t} onChanged={onChange} projectSlug={projectSlug} />
               ))}
               {columnTickets.length === 0 && (
                 <div className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-zinc-400">Nothing here</div>

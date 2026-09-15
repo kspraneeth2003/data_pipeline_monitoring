@@ -65,6 +65,28 @@ export type CheckRun = {
   ticket: Ticket | null;
 };
 
+export type ProjectHealth = {
+  total_checks: number;
+  passing: number;
+  failing: number;
+  erroring: number;
+  never_run: number;
+  disabled: number;
+  open_tickets: number;
+  last_run_at: string | null;
+  status: "PASSED" | "FAILED" | "ERROR" | "NONE";
+};
+
+export type Project = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  health: ProjectHealth;
+};
+
 export type Check = {
   id: string;
   name: string;
@@ -72,6 +94,8 @@ export type Check = {
   type: string;
   schedule: string;
   enabled: boolean;
+  project_id: string;
+  project: { id: string; slug: string; name: string };
   connector_id: string;
   secondary_connector_id: string | null;
   config: Record<string, unknown>;
@@ -83,6 +107,17 @@ export type Check = {
 };
 
 export const api = {
+  listProjects: () => request<Project[]>("/api/projects"),
+  getProject: (key: string) => request<Project>(`/api/projects/${key}`),
+  createProject: (payload: Record<string, unknown>) =>
+    request<Project>("/api/projects", { method: "POST", body: JSON.stringify(payload) }),
+  updateProject: (key: string, payload: Record<string, unknown>) =>
+    request<Project>(`/api/projects/${key}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteProject: (key: string) =>
+    request<void>(`/api/projects/${key}`, { method: "DELETE" }),
+  listProjectChecks: (key: string) => request<Check[]>(`/api/projects/${key}/checks`),
+  listProjectTickets: (key: string) => request<TicketWithContext[]>(`/api/projects/${key}/tickets`),
+
   listChecks: () => request<Check[]>("/api/checks"),
   getCheck: (id: string) => request<Check>(`/api/checks/${id}`),
   createCheck: (payload: Record<string, unknown>) =>

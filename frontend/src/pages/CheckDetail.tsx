@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, type Check } from "../lib/api";
+import { Breadcrumbs } from "../components/Breadcrumbs";
+import { formatDateTime } from "../lib/time";
 import { StatusBadge } from "../components/StatusBadge";
 import { RunNowButton } from "../components/RunNowButton";
 import { EnabledToggle } from "../components/EnabledToggle";
 import { DeleteButton } from "../components/DeleteButton";
 
 export function CheckDetail() {
-  const { id } = useParams<{ id: string }>();
+  const { id, slug = "" } = useParams<{ id: string; slug: string }>();
   const navigate = useNavigate();
   const [check, setCheck] = useState<Check | null>(null);
 
@@ -22,11 +24,16 @@ export function CheckDetail() {
   return (
     <div className="min-h-screen bg-background px-6 py-10 sm:px-10">
       <div className="mx-auto max-w-5xl">
-        <Link to="/" className="text-sm text-zinc-500 hover:text-accent dark:text-zinc-400">
-          &larr; All checks
-        </Link>
+        <Breadcrumbs
+          items={[
+            { label: "Projects", to: "/" },
+            { label: check.project.name, to: `/projects/${slug}` },
+            { label: "Checks", to: `/projects/${slug}/checks` },
+            { label: check.name },
+          ]}
+        />
 
-        <header className="mt-3 mb-6 flex flex-wrap items-start justify-between gap-3">
+        <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight text-foreground">{check.name}</h1>
             {check.description && <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{check.description}</p>}
@@ -58,7 +65,7 @@ export function CheckDetail() {
             <RunNowButton checkId={check.id} onDone={reload} />
             <EnabledToggle checkId={check.id} enabled={check.enabled} onDone={reload} />
             <Link
-              to={`/checks/${check.id}/edit`}
+              to={`/projects/${slug}/checks/${check.id}/edit`}
               className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
             >
               Edit
@@ -67,7 +74,7 @@ export function CheckDetail() {
               confirmMessage={`Delete check "${check.name}"? This also deletes its run history.`}
               onDelete={async () => {
                 await api.deleteCheck(check.id);
-                navigate("/");
+                navigate(`/projects/${slug}/checks`);
               }}
             />
           </div>
@@ -88,7 +95,7 @@ export function CheckDetail() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <StatusBadge status={run.status} />
-                    <span className="text-sm text-zinc-500 dark:text-zinc-400">{new Date(run.started_at).toLocaleString()}</span>
+                    <span className="text-sm text-zinc-500 dark:text-zinc-400">{formatDateTime(run.started_at)}</span>
                     {run.duration_ms !== null && <span className="text-xs text-zinc-400">{run.duration_ms}ms</span>}
                   </div>
                 </div>

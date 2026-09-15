@@ -1,7 +1,7 @@
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
 from app.db import get_db
@@ -137,12 +137,22 @@ def delete_project(key: str, db: Session = Depends(get_db)):
 @router.get("/{key}/checks", response_model=list[schemas.CheckOut])
 def list_project_checks(key: str, db: Session = Depends(get_db)):
     project = _resolve(db, key)
-    return (
+    checks = (
         db.query(models.Check)
+        .options(
+            joinedload(models.Check.connector),
+            joinedload(models.Check.secondary_connector),
+            joinedload(models.Check.runs),
+        )
         .filter_by(project_id=project.id)
         .order_by(models.Check.created_at)
         .all()
     )
+    # The relationship has no ordering of its own, so the UI's runs[0] is only
+    # "the latest run" if it is sorted here first. Same contract as /api/checks.
+    for check in checks:
+        check.runs = sorted(check.runs, key=lambda r: r.started_at, reverse=True)[:1]
+    return checks
 
 
 @router.get("/{key}/tickets", response_model=list[schemas.TicketWithContextOut])

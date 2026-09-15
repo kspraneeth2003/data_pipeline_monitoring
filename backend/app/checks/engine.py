@@ -2,8 +2,10 @@ from dataclasses import dataclass, field
 
 from app.connectors.base import Connector
 from app.connectors.registry import build_connector
+from app.checks.b2s_parity import build_parity_sql, value_column_names
 from app.checks.config_schemas import (
     CONFIG_SCHEMAS_BY_TYPE,
+    BronzeToSilverParityConfig,
     CrossSourceParityConfig,
     FreshnessConfig,
     NullRateConfig,
@@ -174,6 +176,106 @@ def _run_cross_source_parity(primary: Connector, secondary: Connector, raw_confi
     )
 
 
+def _as_int(value) -> int:
+    return int(value) if value is not None else 0
+
+
+def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> CheckOutcome:
+    config = BronzeToSilverParityConfig.model_validate(raw_config)
+    row = connector.run_query(build_parity_sql(config))[0]
+
+    missing = _as_int(row["MISSING_IN_SILVER"])
+    extra = _as_int(row["EXTRA_IN_SILVER"])
+    duplicate_keys = _as_int(row["SILVER_DUPLICATE_KEYS"])
+    surplus_rows = _as_int(row["SILVER_SURPLUS_ROWS"])
+    value_mismatches = _as_int(row["VALUE_MISMATCHES"])
+
+    # Per-column mismatch counts, reported under the logical column name so a
+    # failure points at the column rather than at an opaque total.
+    mismatch_by_column = {
+        logical: _as_int(row[metric])
+        for metric, logical in value_column_names(config).items()
+        if _as_int(row.get(metric)) > 0
+    }
+
+    def _sample(key: str) -> list:
+        raw = row.get(key)
+        if isinstance(raw, str):
+            import json
+
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return []
+        return raw or []
+
+    metrics = {
+        "bronzeRowsSettled": _as_int(row["BRONZE_ROWS_SETTLED"]),
+        "bronzeDistinctKeys": _as_int(row["BRONZE_DISTINCT_KEYS"]),
+        "silverRows": _as_int(row["SILVER_ROWS"]),
+        "silverDistinctKeys": _as_int(row["SILVER_DISTINCT_KEYS"]),
+        "silverDuplicateKeys": duplicate_keys,
+        "silverSurplusRows": surplus_rows,
+        "missingInSilver": missing,
+        "extraInSilver": extra,
+        "valueMismatches": value_mismatches,
+        "mismatchByColumn": mismatch_by_column,
+        "lagMinutes": config.lagMinutes,
+        "thresholds": {
+            "maxMissingInSilver": config.maxMissingInSilver,
+            "maxExtraInSilver": config.maxExtraInSilver,
+            "maxDuplicateKeys": config.maxDuplicateKeys,
+            "maxValueMismatches": config.maxValueMismatches,
+        },
+        "samples": {
+            "missingInSilver": _sample("SAMPLE_MISSING"),
+            "extraInSilver": _sample("SAMPLE_EXTRA"),
+            "duplicateKeys": _sample("SAMPLE_DUPLICATE_KEYS"),
+            "valueMismatch": _sample("SAMPLE_VALUE_MISMATCH"),
+        },
+    }
+
+    # Ordered worst-first: a dedup failure is the headline finding, since it is
+    # the property this check exists to prove.
+    failures: list[str] = []
+    if duplicate_keys > config.maxDuplicateKeys:
+        failures.append(
+            f"deduplication failed - {duplicate_keys} key(s) appear more than once in silver "
+            f"({surplus_rows} surplus row(s))"
+        )
+    if missing > config.maxMissingInSilver:
+        failures.append(f"{missing} settled bronze key(s) never reached silver")
+    if extra > config.maxExtraInSilver:
+        failures.append(f"{extra} silver key(s) have no bronze origin")
+    if value_mismatches > config.maxValueMismatches:
+        detail = (
+            " on " + ", ".join(f"{col} ({n})" for col, n in sorted(mismatch_by_column.items()))
+            if mismatch_by_column
+            else ""
+        )
+        failures.append(f"{value_mismatches} key(s) disagree on value{detail}")
+
+    if failures:
+        return CheckOutcome(
+            status="FAILED",
+            metrics=metrics,
+            message=(
+                f"{config.bronzeObject} -> {config.silverObject}: " + "; ".join(failures)
+            ),
+        )
+
+    return CheckOutcome(
+        status="PASSED",
+        metrics=metrics,
+        message=(
+            f"{config.bronzeObject} -> {config.silverObject}: "
+            f"{metrics['bronzeDistinctKeys']} bronze key(s) map 1:1 onto "
+            f"{metrics['silverRows']} silver row(s); no duplicates, no loss"
+            + (f", {len(config.valueColumns)} value column(s) agree" if config.valueColumns else "")
+        ),
+    )
+
+
 def run_check(
     check_type: str,
     config: dict,
@@ -198,6 +300,8 @@ def run_check(
             return _run_null_rate(primary, config)
         if check_type == "SCHEMA_DRIFT":
             return _run_schema_drift(primary, config)
+        if check_type == "BRONZE_TO_SILVER_PARITY":
+            return _run_bronze_to_silver_parity(primary, config)
         if check_type == "CROSS_SOURCE_PARITY":
             if secondary is None:
                 raise ValueError("CROSS_SOURCE_PARITY checks require a secondaryConnectorId")

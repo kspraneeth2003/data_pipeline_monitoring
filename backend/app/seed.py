@@ -11,7 +11,11 @@ from app.models import cuid
 def upsert_connector(db, name: str, type_: str, config: dict, comment: str) -> models.Connector:
     connector = db.query(models.Connector).filter_by(name=name).first()
     if connector:
-        connector.config = config
+        # Only fill in blanks. Re-seeding must never clobber credentials that
+        # were configured through the UI/API - the seed's env-var defaults are
+        # usually empty, so overwriting here silently breaks every check.
+        merged = {**config, **{k: v for k, v in (connector.config or {}).items() if v not in (None, "")}}
+        connector.config = merged
         connector.comment = comment
     else:
         connector = models.Connector(id=cuid(), name=name, type=type_, config=config, comment=comment)
@@ -105,6 +109,85 @@ def main() -> None:
                     {"name": "STATUS", "dataType": "VARCHAR"},
                     {"name": "INVOICE_DATE", "dataType": "DATE"},
                     {"name": "UPDATED_AT", "dataType": "TIMESTAMP_NTZ"},
+                ],
+            },
+        )
+
+        # --- Bronze -> Silver parity suite -------------------------------
+        # The composite key and the column mapping below are lifted directly
+        # from the MERGE in snowflake/dpm_src_crm/bronze.sql. That MERGE is the
+        # contract; this check asserts the contract actually held.
+        upsert_check(
+            db,
+            "seed-b2s-crm-customers",
+            name="CRM bronze -> silver: dedup + parity",
+            description=(
+                "Every settled bronze customer record should appear exactly once in silver, "
+                "with values intact. Key and column mapping mirror TASK_BRONZE_TO_SILVER_CUSTOMERS."
+            ),
+            type="BRONZE_TO_SILVER_PARITY",
+            schedule="*/10 * * * *",
+            connector_id=snowflake.id,
+            config={
+                "bronzeObject": "DPM_SRC_CRM.BRONZE.CUSTOMERS_RAW",
+                "silverObject": "DPM_SRC_CRM.SILVER.CUSTOMERS",
+                "bronzeLoadedAtColumn": "LOADED_AT",
+                "bronzeSequenceColumn": "RECORD_ID",
+                "lagMinutes": 5,
+                "keyColumns": [
+                    {
+                        "name": "CUSTOMER_ID",
+                        "bronze": "RAW_PAYLOAD:customer_id::NUMBER",
+                        "silver": "CUSTOMER_ID",
+                    }
+                ],
+                "valueColumns": [
+                    {"name": "FULL_NAME", "bronze": "RAW_PAYLOAD:full_name::STRING", "silver": "FULL_NAME"},
+                    {"name": "EMAIL", "bronze": "RAW_PAYLOAD:email::STRING", "silver": "EMAIL"},
+                    {"name": "SIGNUP_DATE", "bronze": "RAW_PAYLOAD:signup_date::DATE", "silver": "SIGNUP_DATE"},
+                ],
+            },
+        )
+
+        # This one is expected to FAIL against the current pipeline: the MERGE in
+        # snowflake/dpm_src_inventory/bronze.sql reads RAW_PAYLOAD:warehouse when
+        # the landed payload key is warehouse_id, so WAREHOUSE_ID is NULL for every
+        # silver row. Key parity is perfect, which is exactly why the value-level
+        # comparison is what catches it.
+        upsert_check(
+            db,
+            "seed-b2s-inventory-products",
+            name="Inventory bronze -> silver: dedup + parity",
+            description=(
+                "Same contract for the products pipeline. Currently surfaces the mis-mapped "
+                "warehouse_id payload field."
+            ),
+            type="BRONZE_TO_SILVER_PARITY",
+            schedule="*/10 * * * *",
+            connector_id=snowflake.id,
+            config={
+                "bronzeObject": "DPM_SRC_INVENTORY.BRONZE.PRODUCTS_RAW",
+                "silverObject": "DPM_SRC_INVENTORY.SILVER.PRODUCTS",
+                "bronzeLoadedAtColumn": "LOADED_AT",
+                "bronzeSequenceColumn": "RECORD_ID",
+                "lagMinutes": 5,
+                "keyColumns": [
+                    {
+                        "name": "PRODUCT_ID",
+                        "bronze": "RAW_PAYLOAD:product_id::NUMBER",
+                        "silver": "PRODUCT_ID",
+                    }
+                ],
+                "valueColumns": [
+                    {"name": "PRODUCT_NAME", "bronze": "RAW_PAYLOAD:product_name::STRING", "silver": "PRODUCT_NAME"},
+                    {"name": "CATEGORY", "bronze": "RAW_PAYLOAD:category::STRING", "silver": "CATEGORY"},
+                    {"name": "UNIT_PRICE", "bronze": "RAW_PAYLOAD:unit_price::NUMBER(10,2)", "silver": "UNIT_PRICE"},
+                    {
+                        "name": "QUANTITY_ON_HAND",
+                        "bronze": "RAW_PAYLOAD:quantity_on_hand::NUMBER",
+                        "silver": "QUANTITY_ON_HAND",
+                    },
+                    {"name": "WAREHOUSE_ID", "bronze": "RAW_PAYLOAD:warehouse_id::STRING", "silver": "WAREHOUSE_ID"},
                 ],
             },
         )

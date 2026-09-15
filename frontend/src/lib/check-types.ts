@@ -9,7 +9,13 @@ export type FieldDescriptor = {
 };
 
 export type CheckTypeMeta = {
-  value: "ROW_COUNT" | "FRESHNESS" | "NULL_RATE" | "SCHEMA_DRIFT" | "CROSS_SOURCE_PARITY";
+  value:
+    | "ROW_COUNT"
+    | "FRESHNESS"
+    | "NULL_RATE"
+    | "SCHEMA_DRIFT"
+    | "CROSS_SOURCE_PARITY"
+    | "BRONZE_TO_SILVER_PARITY";
   label: string;
   description: string;
   needsSecondaryConnector: boolean;
@@ -81,6 +87,64 @@ export const CHECK_TYPES: CheckTypeMeta[] = [
       { key: "primaryQuery", label: "Primary query (runs on primary connector)", kind: "text" },
       { key: "secondaryQuery", label: "Secondary query (runs on secondary connector)", kind: "text" },
       { key: "toleranceAbs", label: "Tolerance (absolute)", kind: "number", optional: true },
+    ],
+  },
+  {
+    value: "BRONZE_TO_SILVER_PARITY",
+    label: "Bronze → Silver parity",
+    description:
+      "Proves silver is a deduplicated, lossless projection of append-only bronze: one row per composite key, nothing dropped, nothing invented, values intact.",
+    needsSecondaryConnector: false,
+    fields: [
+      {
+        key: "bronzeObject",
+        label: "Bronze object (fully qualified)",
+        kind: "text",
+        placeholder: "DB.BRONZE.TABLE_RAW",
+      },
+      {
+        key: "silverObject",
+        label: "Silver object (fully qualified)",
+        kind: "text",
+        placeholder: "DB.SILVER.TABLE",
+      },
+      {
+        key: "keyColumns",
+        label: "Composite key (JSON array of {name, bronze, silver}) - take this from the MERGE's ON clause",
+        kind: "json",
+        placeholder: '[{"name":"CUSTOMER_ID","bronze":"RAW_PAYLOAD:customer_id::NUMBER","silver":"CUSTOMER_ID"}]',
+      },
+      {
+        key: "valueColumns",
+        label: "Value columns to compare (JSON array of {name, bronze, silver}) - optional but catches mis-mapped fields",
+        kind: "json",
+        placeholder: '[{"name":"EMAIL","bronze":"RAW_PAYLOAD:email::STRING","silver":"EMAIL"}]',
+        optional: true,
+      },
+      {
+        key: "bronzeLoadedAtColumn",
+        label: "Bronze load-timestamp column",
+        kind: "text",
+        placeholder: "LOADED_AT",
+        optional: true,
+      },
+      {
+        key: "bronzeSequenceColumn",
+        label: "Bronze tiebreaker column (makes latest-per-key deterministic)",
+        kind: "text",
+        placeholder: "RECORD_ID",
+        optional: true,
+      },
+      {
+        key: "lagMinutes",
+        label: "Settling lag (minutes) - bronze rows newer than this are still in flight",
+        kind: "number",
+        optional: true,
+      },
+      { key: "maxDuplicateKeys", label: "Max duplicate keys allowed in silver", kind: "number", optional: true },
+      { key: "maxMissingInSilver", label: "Max bronze keys missing from silver", kind: "number", optional: true },
+      { key: "maxExtraInSilver", label: "Max silver keys with no bronze origin", kind: "number", optional: true },
+      { key: "maxValueMismatches", label: "Max value mismatches", kind: "number", optional: true },
     ],
   },
 ];

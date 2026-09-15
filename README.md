@@ -2,7 +2,7 @@
 
 An agentic data integrity/parity check engine for Snowflake: scheduled checks, LLM-backed root cause analysis, and a simulated Jira ticket board.
 
-Checks are organized into **projects** - one per source system or pipeline. The home page ranks projects by health so whatever is broken is the first thing you see; everything else (checks, tickets, settings) lives inside a project.
+Work is organized **project -> database -> check**. A project is a data product (Customer 360) spanning the databases that serve it; checks live inside a database. The home page ranks projects by health so whatever is broken is the first thing you see.
 
 See [PLAN.md](./PLAN.md) for requirements/milestones and [STATUS.md](./STATUS.md) for current state and setup instructions.
 

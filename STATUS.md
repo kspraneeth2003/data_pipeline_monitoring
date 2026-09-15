@@ -23,7 +23,7 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     main.py               FastAPI app, CORS, router registration, scheduler lifecycle
     config.py             Settings (pydantic-settings, reads backend/.env)
     db.py                 SQLAlchemy engine/session
-    models.py             ORM models: Project, Connector, Check, CheckRun, RcaResult, Ticket
+    models.py             ORM models: Project, Database, Connector, Check, CheckRun, RcaResult, Ticket
     schemas.py            Pydantic request/response schemas
     crypto.py             AES-256-GCM encrypt/decrypt for connector secrets
     connectors/
@@ -65,24 +65,32 @@ snowflake/                Tracked DDL for the bronze/silver/gold test pipeline -
 
 ### Information architecture
 
-Projects are the top-level unit; a check belongs to exactly one project.
+**project -> database -> check.** A project is a data product (Customer 360),
+not a database - it spans the databases that together serve one domain.
 
 ```
-/                              Projects, ranked worst-health first
-/projects/new                  Create
-/projects/:slug                Overview - health, what needs attention
-/projects/:slug/checks         Checks in this project (+ /new, /:id, /:id/edit)
-/projects/:slug/tickets        Tickets for this project only
-/projects/:slug/settings       Rename, connectors in use, delete
-/connectors                    Workspace-level - one account serves many projects
+/                                              Projects, ranked worst-health first
+/projects/new                                  Create
+/projects/:slug                                Databases in this project, with health
+/projects/:slug/tickets                        Tickets across the project
+/projects/:slug/settings                       Rename, connectors in use, delete
+/projects/:slug/databases/new                  Add one (picked from live discovery)
+/projects/:slug/databases/:dbSlug              Checks on this database
+/projects/:slug/databases/:dbSlug/settings     Describe, remove from project
+/projects/:slug/databases/:dbSlug/checks/...   new | :id | :id/edit
+/connectors                                    Workspace-level
 ```
 
-Connectors deliberately sit outside the project tree: a single Snowflake
-account serves several projects, so nesting them would force duplicate
-credentials. Project settings shows which ones a project uses, read-only.
+A check is *anchored* to the database holding its primary object but may still
+reference sibling databases - a silver-vs-gold parity check legitimately spans
+two. There is no direct check -> project link; the project is reached through
+the database, so the two cannot disagree.
 
-Project health takes the worst state rather than an average - one failing check
-makes the project read as failing.
+Connectors sit outside the tree: a database is reached through a connector, and
+one Snowflake account serves many databases across many projects.
+
+Health takes the worst state rather than an average at every level - one
+failing check makes its database, and its project, read as failing.
 
 ### The RCA agent is a LangGraph graph (`backend/app/rca/graph.py`)
 

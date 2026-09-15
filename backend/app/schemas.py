@@ -6,10 +6,37 @@ from pydantic import BaseModel, ConfigDict
 
 class ConnectorCreate(BaseModel):
     name: str
-    type: str
+    project_id: str
+    type: str = "SNOWFLAKE"
     comment: str | None = None
     config: dict[str, Any] = {}
     test_connection: bool = True
+
+
+class ConnectionProbe(BaseModel):
+    type: str = "SNOWFLAKE"
+    config: dict[str, Any] = {}
+
+
+class ConnectionProbeResult(BaseModel):
+    account: str | None = None
+    username: str | None = None
+    role: str | None = None
+    warehouse: str | None = None
+    databases: list[str] = []
+
+
+class ProjectSetup(BaseModel):
+    """Everything a project needs, in one call: name it, connect it, pick its
+    databases. Splitting this across three screens is what made setup feel like
+    administration rather than getting started."""
+
+    name: str
+    description: str | None = None
+    connector_name: str = "snowflake"
+    connector_type: str = "SNOWFLAKE"
+    config: dict[str, Any] = {}
+    databases: list[str] = []
 
 
 class ConnectorUpdate(BaseModel):
@@ -24,6 +51,7 @@ class ConnectorOut(BaseModel):
 
     id: str
     name: str
+    project_id: str
     type: str
     config: dict[str, Any]
     comment: str | None

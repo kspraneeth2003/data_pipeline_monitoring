@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
+from app.connectors.security import encrypt_config_secrets, redact_config_secrets
+from app.connectors.snowflake_connector import test_snowflake_connection
 from app.db import get_db
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -151,6 +153,53 @@ def create_project(payload: schemas.ProjectCreate, db: Session = Depends(get_db)
     return _project_out(db, project)
 
 
+@router.post("/setup", response_model=schemas.ProjectWithHealthOut, status_code=201)
+def setup_project(payload: schemas.ProjectSetup, db: Session = Depends(get_db)):
+    """Name it, connect it, pick its databases - in one call.
+
+    The connection is tested before anything is written, so a project is never
+    created in a half-configured state that the user then has to clean up.
+    """
+    if payload.connector_type == "SNOWFLAKE":
+        if not payload.config.get("password") and not payload.config.get("privateKey"):
+            raise HTTPException(400, "Provide either a password or a private key")
+        try:
+            test_snowflake_connection(payload.config)
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(400, f"Connection test failed: {error}") from error
+
+    project = models.Project(
+        slug=_unique_project_slug(db, _slugify(payload.name)),
+        name=payload.name,
+        description=payload.description,
+    )
+    db.add(project)
+    db.flush()
+
+    connector = models.Connector(
+        project_id=project.id,
+        name=payload.connector_name or "snowflake",
+        type=payload.connector_type,
+        config=encrypt_config_secrets(payload.connector_type, payload.config),
+    )
+    db.add(connector)
+    db.flush()
+
+    for name in dict.fromkeys(n.strip() for n in payload.databases if n.strip()):
+        db.add(
+            models.Database(
+                project_id=project.id,
+                connector_id=connector.id,
+                name=name,
+                slug=_unique_database_slug(db, project.id, _slugify(name)),
+            )
+        )
+
+    db.commit()
+    db.refresh(project)
+    return _project_out(db, project)
+
+
 @router.get("/{key}", response_model=schemas.ProjectWithHealthOut)
 def get_project(key: str, db: Session = Depends(get_db)):
     return _project_out(db, _resolve_project(db, key))
@@ -203,6 +252,21 @@ def list_project_tickets(key: str, db: Session = Depends(get_db)):
 
 
 # --- Databases within a project -----------------------------------------
+
+
+@router.get("/{key}/connectors", response_model=list[schemas.ConnectorOut])
+def list_project_connectors(key: str, db: Session = Depends(get_db)):
+    project = _resolve_project(db, key)
+    return [
+        schemas.ConnectorOut.model_validate(
+            {
+                **schemas.ConnectorOut.model_validate(c).model_dump(),
+                "config": redact_config_secrets(c.type, c.config),
+                "checks_count": sum(len(d.checks) for d in project.databases if d.connector_id == c.id),
+            }
+        )
+        for c in project.connectors
+    ]
 
 
 @router.get("/{key}/databases", response_model=list[schemas.DatabaseWithHealthOut])

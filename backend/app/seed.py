@@ -10,8 +10,8 @@ from app.db import SessionLocal
 from app.models import cuid
 
 
-def upsert_connector(db, name: str, type_: str, config: dict, comment: str) -> models.Connector:
-    connector = db.query(models.Connector).filter_by(name=name).first()
+def upsert_connector(db, project, name: str, type_: str, config: dict, comment: str) -> models.Connector:
+    connector = db.query(models.Connector).filter_by(project_id=project.id, name=name).first()
     if connector:
         # Only fill in blanks. Re-seeding must never clobber credentials that
         # were configured through the UI/API - the seed's env-var defaults are
@@ -20,7 +20,9 @@ def upsert_connector(db, name: str, type_: str, config: dict, comment: str) -> m
         connector.config = merged
         connector.comment = comment
     else:
-        connector = models.Connector(id=cuid(), name=name, type=type_, config=config, comment=comment)
+        connector = models.Connector(
+            id=cuid(), project_id=project.id, name=name, type=type_, config=config, comment=comment
+        )
         db.add(connector)
     db.commit()
     db.refresh(connector)
@@ -73,19 +75,6 @@ def upsert_check(db, id_: str, **fields) -> None:
 def main() -> None:
     db = SessionLocal()
     try:
-        snowflake = upsert_connector(
-            db,
-            "snowflake-default",
-            "SNOWFLAKE",
-            {
-                "account": settings.snowflake_account or "",
-                "username": settings.snowflake_user or "",
-                "role": settings.snowflake_role or "",
-                "warehouse": settings.snowflake_warehouse or "",
-            },
-            "Default Snowflake connection (key-pair auth via legacy .env fallback).",
-        )
-
         # A project is a data product, not a database - it spans the databases
         # that together serve one domain. Customer 360 is fed by the CRM and
         # billing sources and lands in its own gold database.
@@ -96,6 +85,23 @@ def main() -> None:
         inventory_360 = upsert_project(
             db, "inventory-360", "Inventory 360",
             "The inventory data product: product and stock snapshots feeding the gold stock summary.",
+        )
+
+        env_config = {
+            "account": settings.snowflake_account or "",
+            "username": settings.snowflake_user or "",
+            "role": settings.snowflake_role or "",
+            "warehouse": settings.snowflake_warehouse or "",
+        }
+        # One connection per project - each project is self-contained, so
+        # deleting one can never break another.
+        snowflake = upsert_connector(
+            db, customer_360, "snowflake-default", "SNOWFLAKE", dict(env_config),
+            "Snowflake connection for this project.",
+        )
+        inventory_snowflake = upsert_connector(
+            db, inventory_360, "snowflake-default", "SNOWFLAKE", dict(env_config),
+            "Snowflake connection for this project.",
         )
 
         crm = upsert_database(
@@ -111,11 +117,11 @@ def main() -> None:
             "Gold: the joined customer 360 view.",
         )
         inventory = upsert_database(
-            db, inventory_360, "DPM_SRC_INVENTORY", snowflake.id,
+            db, inventory_360, "DPM_SRC_INVENTORY", inventory_snowflake.id,
             "Bronze landing and silver cleaned product/stock snapshots.",
         )
         upsert_database(
-            db, inventory_360, "DPM_INVENTORY_360", snowflake.id,
+            db, inventory_360, "DPM_INVENTORY_360", inventory_snowflake.id,
             "Gold: the stock summary.",
         )
 
@@ -238,7 +244,7 @@ def main() -> None:
             ),
             type="BRONZE_TO_SILVER_PARITY",
             schedule="*/10 * * * *",
-            connector_id=snowflake.id,
+            connector_id=inventory_snowflake.id,
             config={
                 "bronzeObject": "DPM_SRC_INVENTORY.BRONZE.PRODUCTS_RAW",
                 "silverObject": "DPM_SRC_INVENTORY.SILVER.PRODUCTS",

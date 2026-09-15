@@ -71,6 +71,9 @@ class Project(Base):
     databases: Mapped[list["Database"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Database.name"
     )
+    connectors: Mapped[list["Connector"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="Connector.name"
+    )
 
     @property
     def checks(self) -> list["Check"]:
@@ -114,17 +117,30 @@ class Database(Base):
 
 
 class Connector(Base):
+    """A connection to a warehouse, owned by one project.
+
+    Project-scoped rather than workspace-scoped: connecting is part of setting a
+    project up, not a separate administrative step done somewhere else first.
+    The cost is that two projects on the same account each hold their own
+    credentials - deliberate, since it keeps a project self-contained and means
+    deleting one can never break another.
+    """
+
     __tablename__ = "connectors"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
-    name: Mapped[str] = mapped_column(String, unique=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String)
     type: Mapped[str] = mapped_column(String)
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    project: Mapped["Project"] = relationship(back_populates="connectors")
     checks: Mapped[list["Check"]] = relationship(back_populates="connector", foreign_keys="Check.connector_id")
+
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_connectors_project_name"),)
 
 
 class Check(Base):

@@ -1,7 +1,8 @@
-"""Seeds one Snowflake connector, three projects, and the example checks that
-run against the bronze/silver/gold test pipeline. Run with `python -m app.seed`.
-Safe to re-run - each definition is kept in sync with what's below, and
-configured connector credentials are preserved."""
+"""Seeds one Snowflake connector, two data-product projects, the databases each
+one spans, and the example checks that run against the bronze/silver/gold test
+pipeline. Run with `python -m app.seed`. Safe to re-run - each definition is
+kept in sync with what's below, and configured connector credentials are
+preserved."""
 
 from app import models
 from app.config import settings
@@ -39,6 +40,26 @@ def upsert_project(db, slug: str, name: str, description: str) -> models.Project
     return project
 
 
+def upsert_database(db, project, name: str, connector_id: str, description: str) -> models.Database:
+    database = db.query(models.Database).filter_by(project_id=project.id, name=name).first()
+    if database:
+        database.description = description
+        database.connector_id = connector_id
+    else:
+        database = models.Database(
+            id=cuid(),
+            project_id=project.id,
+            connector_id=connector_id,
+            name=name,
+            slug=name.lower().replace("_", "-"),
+            description=description,
+        )
+        db.add(database)
+    db.commit()
+    db.refresh(database)
+    return database
+
+
 def upsert_check(db, id_: str, **fields) -> None:
     check = db.query(models.Check).filter_by(id=id_).first()
     if check:
@@ -65,25 +86,43 @@ def main() -> None:
             "Default Snowflake connection (key-pair auth via legacy .env fallback).",
         )
 
-        # One project per source domain. This is the grouping a data team
-        # actually reasons about: "is CRM healthy", not "are checks 1-6 green".
-        crm = upsert_project(
-            db, "crm", "CRM",
-            "Customer records landing from the CRM into bronze, cleaned into silver, joined into the gold 360 view.",
+        # A project is a data product, not a database - it spans the databases
+        # that together serve one domain. Customer 360 is fed by the CRM and
+        # billing sources and lands in its own gold database.
+        customer_360 = upsert_project(
+            db, "customer-360", "Customer 360",
+            "The customer data product: CRM and billing sources feeding the gold 360 view.",
         )
-        inventory = upsert_project(
-            db, "inventory", "Inventory",
-            "Product and stock snapshots from the inventory system.",
+        inventory_360 = upsert_project(
+            db, "inventory-360", "Inventory 360",
+            "The inventory data product: product and stock snapshots feeding the gold stock summary.",
         )
-        billing = upsert_project(
-            db, "billing", "Billing",
-            "Invoice records and their downstream billing aggregates.",
+
+        crm = upsert_database(
+            db, customer_360, "DPM_SRC_CRM", snowflake.id,
+            "Bronze landing and silver cleaned customer records from the CRM.",
+        )
+        billing = upsert_database(
+            db, customer_360, "DPM_SRC_BILLING", snowflake.id,
+            "Bronze landing and silver cleaned invoice records.",
+        )
+        customer_gold = upsert_database(
+            db, customer_360, "DPM_CUSTOMER_360", snowflake.id,
+            "Gold: the joined customer 360 view.",
+        )
+        inventory = upsert_database(
+            db, inventory_360, "DPM_SRC_INVENTORY", snowflake.id,
+            "Bronze landing and silver cleaned product/stock snapshots.",
+        )
+        upsert_database(
+            db, inventory_360, "DPM_INVENTORY_360", snowflake.id,
+            "Gold: the stock summary.",
         )
 
         upsert_check(
             db,
             "seed-row-count-silver-vs-gold",
-            project_id=crm.id,
+            database_id=crm.id,
             name="Customers: Silver vs Gold row count parity",
             description="Every customer landed in CRM silver should show up in the gold 360 table.",
             type="ROW_COUNT",
@@ -99,7 +138,7 @@ def main() -> None:
         upsert_check(
             db,
             "seed-freshness-gold-360",
-            project_id=crm.id,
+            database_id=customer_gold.id,
             name="Gold Customer 360 freshness",
             description="Gold table should be refreshed at least every 90 minutes given the hourly dummy-data generator.",
             type="FRESHNESS",
@@ -115,7 +154,7 @@ def main() -> None:
         upsert_check(
             db,
             "seed-null-rate-customer-email",
-            project_id=crm.id,
+            database_id=crm.id,
             name="CRM silver customers: email null rate",
             description="Email should be populated for effectively all customers.",
             type="NULL_RATE",
@@ -127,7 +166,7 @@ def main() -> None:
         upsert_check(
             db,
             "seed-schema-drift-billing-invoices",
-            project_id=billing.id,
+            database_id=billing.id,
             name="Billing silver invoices: schema drift",
             description="Guards against unexpected schema changes to the silver invoices table.",
             type="SCHEMA_DRIFT",
@@ -153,7 +192,7 @@ def main() -> None:
         upsert_check(
             db,
             "seed-b2s-crm-customers",
-            project_id=crm.id,
+            database_id=crm.id,
             name="CRM bronze -> silver: dedup + parity",
             description=(
                 "Every settled bronze customer record should appear exactly once in silver, "
@@ -191,7 +230,7 @@ def main() -> None:
         upsert_check(
             db,
             "seed-b2s-inventory-products",
-            project_id=inventory.id,
+            database_id=inventory.id,
             name="Inventory bronze -> silver: dedup + parity",
             description=(
                 "Same contract for the products pipeline. Currently surfaces the mis-mapped "
@@ -227,13 +266,14 @@ def main() -> None:
             },
         )
 
-        # The projects migration parks pre-existing checks in "Unsorted". Once
-        # they have been claimed by a real project, an empty placeholder is just
-        # noise on the home page.
-        unsorted = db.query(models.Project).filter_by(slug="unsorted").first()
-        if unsorted and not unsorted.checks:
-            db.delete(unsorted)
-            db.commit()
+        # Earlier revisions of this seed created one project per source domain,
+        # and the projects migration parks pre-existing checks in "Unsorted".
+        # Once real projects have claimed every check, those are just noise.
+        for stale_slug in ("unsorted", "crm", "inventory", "billing"):
+            stale = db.query(models.Project).filter_by(slug=stale_slug).first()
+            if stale and not stale.checks:
+                db.delete(stale)
+        db.commit()
 
         print("Seed complete.")
     finally:

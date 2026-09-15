@@ -11,10 +11,10 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug or "project"
+    return slug or "item"
 
 
-def _unique_slug(db: Session, base: str, exclude_id: str | None = None) -> str:
+def _unique_project_slug(db: Session, base: str, exclude_id: str | None = None) -> str:
     slug, suffix = base, 2
     while True:
         query = db.query(models.Project).filter_by(slug=slug)
@@ -25,8 +25,19 @@ def _unique_slug(db: Session, base: str, exclude_id: str | None = None) -> str:
         slug, suffix = f"{base}-{suffix}", suffix + 1
 
 
-def _resolve(db: Session, key: str) -> models.Project:
-    """Projects are addressable by slug (what the UI uses in URLs) or by id."""
+def _unique_database_slug(db: Session, project_id: str, base: str, exclude_id: str | None = None) -> str:
+    slug, suffix = base, 2
+    while True:
+        query = db.query(models.Database).filter_by(project_id=project_id, slug=slug)
+        if exclude_id:
+            query = query.filter(models.Database.id != exclude_id)
+        if not query.first():
+            return slug
+        slug, suffix = f"{base}-{suffix}", suffix + 1
+
+
+def _resolve_project(db: Session, key: str) -> models.Project:
+    """Addressable by slug (what the UI puts in URLs) or by id."""
     project = db.query(models.Project).filter_by(slug=key).first()
     if not project:
         project = db.query(models.Project).filter_by(id=key).first()
@@ -35,12 +46,21 @@ def _resolve(db: Session, key: str) -> models.Project:
     return project
 
 
-def _health(db: Session, project: models.Project) -> schemas.ProjectHealth:
+def _resolve_database(db: Session, project: models.Project, key: str) -> models.Database:
+    database = db.query(models.Database).filter_by(project_id=project.id, slug=key).first()
+    if not database:
+        database = db.query(models.Database).filter_by(project_id=project.id, id=key).first()
+    if not database:
+        raise HTTPException(404, "Database not found in this project")
+    return database
+
+
+def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.ProjectHealth:
     counts = {"PASSED": 0, "FAILED": 0, "ERROR": 0}
     never_run = disabled = 0
     last_run_at = None
 
-    for check in project.checks:
+    for check in checks:
         if not check.enabled:
             disabled += 1
         latest = max(check.runs, key=lambda r: r.started_at, default=None)
@@ -52,16 +72,17 @@ def _health(db: Session, project: models.Project) -> schemas.ProjectHealth:
         if latest.status in counts:
             counts[latest.status] += 1
 
-    open_tickets = (
-        db.query(models.Ticket)
-        .join(models.CheckRun, models.Ticket.check_run_id == models.CheckRun.id)
-        .join(models.Check, models.CheckRun.check_id == models.Check.id)
-        .filter(models.Check.project_id == project.id)
-        .filter(models.Ticket.status != models.TicketStatus.DONE.value)
-        .count()
-    )
+    open_tickets = 0
+    if checks:
+        open_tickets = (
+            db.query(models.Ticket)
+            .join(models.CheckRun, models.Ticket.check_run_id == models.CheckRun.id)
+            .filter(models.CheckRun.check_id.in_([c.id for c in checks]))
+            .filter(models.Ticket.status != models.TicketStatus.DONE.value)
+            .count()
+        )
 
-    # Worst state wins. A project with one failing check is a failing project -
+    # Worst state wins. A database with one failing check is a failing database -
     # averaging it into "mostly green" is how real breakage gets ignored.
     if counts["ERROR"]:
         status = "ERROR"
@@ -73,7 +94,7 @@ def _health(db: Session, project: models.Project) -> schemas.ProjectHealth:
         status = "NONE"
 
     return schemas.ProjectHealth(
-        total_checks=len(project.checks),
+        total_checks=len(checks),
         passing=counts["PASSED"],
         failing=counts["FAILED"],
         erroring=counts["ERROR"],
@@ -85,84 +106,85 @@ def _health(db: Session, project: models.Project) -> schemas.ProjectHealth:
     )
 
 
-def _with_health(db: Session, project: models.Project) -> schemas.ProjectWithHealthOut:
+def _database_out(db: Session, database: models.Database) -> schemas.DatabaseWithHealthOut:
+    return schemas.DatabaseWithHealthOut(
+        **schemas.DatabaseOut.model_validate(database).model_dump(),
+        connector=schemas.ConnectorRef.model_validate(database.connector),
+        health=_health_of_checks(db, database.checks),
+    )
+
+
+def _project_out(db: Session, project: models.Project) -> schemas.ProjectWithHealthOut:
     return schemas.ProjectWithHealthOut(
         **schemas.ProjectOut.model_validate(project).model_dump(),
-        health=_health(db, project),
+        health=_health_of_checks(db, project.checks),
+        databases=[_database_out(db, d) for d in project.databases],
     )
+
+
+def _sorted_latest_run(checks: list[models.Check], limit: int = 1) -> None:
+    """The runs relationship has no ordering, so the UI's runs[0] is only the
+    latest run if it is sorted here first."""
+    for check in checks:
+        check.runs = sorted(check.runs, key=lambda r: r.started_at, reverse=True)[:limit]
+
+
+# --- Projects ------------------------------------------------------------
 
 
 @router.get("", response_model=list[schemas.ProjectWithHealthOut])
 def list_projects(db: Session = Depends(get_db)):
     projects = db.query(models.Project).order_by(models.Project.name).all()
-    return [_with_health(db, p) for p in projects]
+    return [_project_out(db, p) for p in projects]
 
 
 @router.post("", response_model=schemas.ProjectWithHealthOut, status_code=201)
 def create_project(payload: schemas.ProjectCreate, db: Session = Depends(get_db)):
-    slug = _unique_slug(db, _slugify(payload.slug or payload.name))
-    project = models.Project(slug=slug, name=payload.name, description=payload.description)
+    project = models.Project(
+        slug=_unique_project_slug(db, _slugify(payload.slug or payload.name)),
+        name=payload.name,
+        description=payload.description,
+    )
     db.add(project)
     db.commit()
     db.refresh(project)
-    return _with_health(db, project)
+    return _project_out(db, project)
 
 
 @router.get("/{key}", response_model=schemas.ProjectWithHealthOut)
 def get_project(key: str, db: Session = Depends(get_db)):
-    return _with_health(db, _resolve(db, key))
+    return _project_out(db, _resolve_project(db, key))
 
 
 @router.patch("/{key}", response_model=schemas.ProjectWithHealthOut)
 def update_project(key: str, payload: schemas.ProjectUpdate, db: Session = Depends(get_db)):
-    project = _resolve(db, key)
+    project = _resolve_project(db, key)
     if payload.name is not None:
         project.name = payload.name
     if payload.description is not None:
         project.description = payload.description
     if payload.slug is not None:
-        project.slug = _unique_slug(db, _slugify(payload.slug), exclude_id=project.id)
+        project.slug = _unique_project_slug(db, _slugify(payload.slug), exclude_id=project.id)
     db.commit()
     db.refresh(project)
-    return _with_health(db, project)
+    return _project_out(db, project)
 
 
 @router.delete("/{key}", status_code=204)
 def delete_project(key: str, db: Session = Depends(get_db)):
-    project = _resolve(db, key)
-    db.delete(project)
+    db.delete(_resolve_project(db, key))
     db.commit()
-
-
-@router.get("/{key}/checks", response_model=list[schemas.CheckOut])
-def list_project_checks(key: str, db: Session = Depends(get_db)):
-    project = _resolve(db, key)
-    checks = (
-        db.query(models.Check)
-        .options(
-            joinedload(models.Check.connector),
-            joinedload(models.Check.secondary_connector),
-            joinedload(models.Check.runs),
-        )
-        .filter_by(project_id=project.id)
-        .order_by(models.Check.created_at)
-        .all()
-    )
-    # The relationship has no ordering of its own, so the UI's runs[0] is only
-    # "the latest run" if it is sorted here first. Same contract as /api/checks.
-    for check in checks:
-        check.runs = sorted(check.runs, key=lambda r: r.started_at, reverse=True)[:1]
-    return checks
 
 
 @router.get("/{key}/tickets", response_model=list[schemas.TicketWithContextOut])
 def list_project_tickets(key: str, db: Session = Depends(get_db)):
-    project = _resolve(db, key)
+    project = _resolve_project(db, key)
     rows = (
-        db.query(models.Ticket, models.Check)
+        db.query(models.Ticket, models.Check, models.Database)
         .join(models.CheckRun, models.Ticket.check_run_id == models.CheckRun.id)
         .join(models.Check, models.CheckRun.check_id == models.Check.id)
-        .filter(models.Check.project_id == project.id)
+        .join(models.Database, models.Check.database_id == models.Database.id)
+        .filter(models.Database.project_id == project.id)
         .order_by(models.Ticket.created_at.desc())
         .all()
     )
@@ -172,6 +194,97 @@ def list_project_tickets(key: str, db: Session = Depends(get_db)):
             check_run_id=ticket.check_run_id,
             check_id=check.id,
             check_name=check.name,
+            database_slug=database.slug,
+            database_name=database.name,
+            project_slug=project.slug,
         )
-        for ticket, check in rows
+        for ticket, check, database in rows
     ]
+
+
+# --- Databases within a project -----------------------------------------
+
+
+@router.get("/{key}/databases", response_model=list[schemas.DatabaseWithHealthOut])
+def list_databases(key: str, db: Session = Depends(get_db)):
+    project = _resolve_project(db, key)
+    return [_database_out(db, d) for d in project.databases]
+
+
+@router.post("/{key}/databases", response_model=schemas.DatabaseWithHealthOut, status_code=201)
+def create_database(key: str, payload: schemas.DatabaseCreate, db: Session = Depends(get_db)):
+    project = _resolve_project(db, key)
+    if not db.query(models.Connector).filter_by(id=payload.connector_id).first():
+        raise HTTPException(400, "connector_id does not match an existing connector")
+
+    name = payload.name.strip()
+    if db.query(models.Database).filter_by(project_id=project.id, name=name).first():
+        raise HTTPException(400, f"{name} is already in this project")
+
+    database = models.Database(
+        project_id=project.id,
+        connector_id=payload.connector_id,
+        name=name,
+        slug=_unique_database_slug(db, project.id, _slugify(payload.slug or name)),
+        description=payload.description,
+    )
+    db.add(database)
+    db.commit()
+    db.refresh(database)
+    return _database_out(db, database)
+
+
+@router.get("/{key}/databases/{db_key}", response_model=schemas.DatabaseWithHealthOut)
+def get_database(key: str, db_key: str, db: Session = Depends(get_db)):
+    project = _resolve_project(db, key)
+    return _database_out(db, _resolve_database(db, project, db_key))
+
+
+@router.patch("/{key}/databases/{db_key}", response_model=schemas.DatabaseWithHealthOut)
+def update_database(key: str, db_key: str, payload: schemas.DatabaseUpdate, db: Session = Depends(get_db)):
+    project = _resolve_project(db, key)
+    database = _resolve_database(db, project, db_key)
+
+    if payload.name is not None:
+        database.name = payload.name.strip()
+    if payload.description is not None:
+        database.description = payload.description
+    if payload.connector_id is not None:
+        if not db.query(models.Connector).filter_by(id=payload.connector_id).first():
+            raise HTTPException(400, "connector_id does not match an existing connector")
+        database.connector_id = payload.connector_id
+    if payload.slug is not None:
+        database.slug = _unique_database_slug(
+            db, project.id, _slugify(payload.slug), exclude_id=database.id
+        )
+
+    db.commit()
+    db.refresh(database)
+    return _database_out(db, database)
+
+
+@router.delete("/{key}/databases/{db_key}", status_code=204)
+def delete_database(key: str, db_key: str, db: Session = Depends(get_db)):
+    project = _resolve_project(db, key)
+    db.delete(_resolve_database(db, project, db_key))
+    db.commit()
+
+
+@router.get("/{key}/databases/{db_key}/checks", response_model=list[schemas.CheckOut])
+def list_database_checks(key: str, db_key: str, db: Session = Depends(get_db)):
+    project = _resolve_project(db, key)
+    database = _resolve_database(db, project, db_key)
+    checks = (
+        db.query(models.Check)
+        .options(
+            joinedload(models.Check.connector),
+            joinedload(models.Check.secondary_connector),
+            joinedload(models.Check.database).joinedload(models.Database.project),
+            joinedload(models.Check.runs),
+        )
+        .filter_by(database_id=database.id)
+        .order_by(models.Check.created_at)
+        .all()
+    )
+    _sorted_latest_run(checks)
+    return checks

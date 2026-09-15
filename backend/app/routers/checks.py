@@ -16,6 +16,7 @@ def _query_with_relations(db: Session):
     return db.query(models.Check).options(
         joinedload(models.Check.connector),
         joinedload(models.Check.secondary_connector),
+        joinedload(models.Check.database).joinedload(models.Database.project),
         joinedload(models.Check.runs).joinedload(models.CheckRun.rca),
         joinedload(models.Check.runs).joinedload(models.CheckRun.ticket),
     )
@@ -55,8 +56,9 @@ def create_check(payload: schemas.CheckCreate, db: Session = Depends(get_db)):
     if payload.type == "CROSS_SOURCE_PARITY" and not payload.secondary_connector_id:
         raise HTTPException(400, "CROSS_SOURCE_PARITY checks require a secondary_connector_id")
 
-    if not db.query(models.Project).filter_by(id=payload.project_id).first():
-        raise HTTPException(400, "project_id does not match an existing project")
+    database = db.query(models.Database).filter_by(id=payload.database_id).first()
+    if not database:
+        raise HTTPException(400, "database_id does not match an existing database")
 
     config = _validate_config(payload.type, payload.config)
 
@@ -67,7 +69,7 @@ def create_check(payload: schemas.CheckCreate, db: Session = Depends(get_db)):
         type=payload.type,
         schedule=payload.schedule,
         enabled=payload.enabled,
-        project_id=payload.project_id,
+        database_id=payload.database_id,
         connector_id=payload.connector_id,
         secondary_connector_id=payload.secondary_connector_id,
         config=config,

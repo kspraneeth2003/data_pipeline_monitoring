@@ -51,13 +51,35 @@ class ProjectRef(BaseModel):
     name: str
 
 
+class DatabaseCreate(BaseModel):
+    name: str
+    connector_id: str
+    slug: str | None = None
+    description: str | None = None
+
+
+class DatabaseUpdate(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    description: str | None = None
+    connector_id: str | None = None
+
+
+class DatabaseRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    slug: str
+    name: str
+    project: ProjectRef
+
+
 class CheckCreate(BaseModel):
     name: str
     description: str | None = None
     type: str
     schedule: str
     enabled: bool = True
-    project_id: str
+    database_id: str
     connector_id: str
     secondary_connector_id: str | None = None
     config: dict[str, Any]
@@ -69,7 +91,7 @@ class CheckUpdate(BaseModel):
     type: str | None = None
     schedule: str | None = None
     enabled: bool | None = None
-    project_id: str | None = None
+    database_id: str | None = None
     connector_id: str | None = None
     secondary_connector_id: str | None = None
     config: dict[str, Any] | None = None
@@ -131,13 +153,13 @@ class CheckOut(BaseModel):
     type: str
     schedule: str
     enabled: bool
-    project_id: str
+    database_id: str
     connector_id: str
     secondary_connector_id: str | None
     config: dict[str, Any]
     created_at: datetime
     updated_at: datetime
-    project: ProjectRef
+    database: DatabaseRef
     connector: ConnectorRef
     secondary_connector: ConnectorRef | None = None
     runs: list[CheckRunOut] = []
@@ -147,6 +169,10 @@ class TicketWithContextOut(TicketOut):
     check_run_id: str
     check_id: str
     check_name: str
+    # Enough context to link straight to the check in the project tree.
+    database_slug: str
+    database_name: str
+    project_slug: str
 
 
 class TicketUpdate(BaseModel):
@@ -180,5 +206,24 @@ class ProjectOut(BaseModel):
     updated_at: datetime
 
 
+class DatabaseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    slug: str
+    name: str
+    description: str | None
+    project_id: str
+    connector_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class DatabaseWithHealthOut(DatabaseOut):
+    connector: ConnectorRef
+    health: ProjectHealth
+
+
 class ProjectWithHealthOut(ProjectOut):
     health: ProjectHealth
+    databases: list[DatabaseWithHealthOut] = []

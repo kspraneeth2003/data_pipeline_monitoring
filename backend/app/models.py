@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -48,11 +48,14 @@ class TicketPriority(str, enum.Enum):
 
 
 class Project(Base):
-    """A monitored data domain - usually one source system or pipeline.
+    """A data product: the databases that together serve one business domain.
 
-    Checks belong to exactly one project. Connectors deliberately do *not*:
-    a single Snowflake account legitimately serves several projects, so
-    connectors stay workspace-level and projects reference them.
+    A project is not itself a database - it holds them. Customer 360 spans the
+    CRM source, the billing source and the gold 360 database; the project is
+    what makes those one thing.
+
+    Connectors stay workspace-level rather than living under a project, since a
+    single Snowflake account serves several projects.
     """
 
     __tablename__ = "projects"
@@ -65,9 +68,49 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    checks: Mapped[list["Check"]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
+    databases: Mapped[list["Database"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="Database.name"
     )
+
+    @property
+    def checks(self) -> list["Check"]:
+        return [check for database in self.databases for check in database.checks]
+
+
+class Database(Base):
+    """One database inside a project, reached through a connector.
+
+    A project is a data product; the databases are where its data actually
+    lives. Checks hang off a database rather than off the project directly, so
+    "what is wrong" narrows to a concrete place.
+
+    A check is *anchored* to the database holding its primary object, but may
+    still reference objects in sibling databases - a silver-vs-gold parity check
+    legitimately spans two. Anchoring keeps every check in exactly one place in
+    the tree while leaving cross-database comparisons possible.
+    """
+
+    __tablename__ = "databases"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    connector_id: Mapped[str] = mapped_column(ForeignKey("connectors.id"))
+
+    # The database name as the warehouse knows it, e.g. DPM_SRC_CRM.
+    name: Mapped[str] = mapped_column(String)
+    slug: Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    project: Mapped["Project"] = relationship(back_populates="databases")
+    connector: Mapped["Connector"] = relationship()
+    checks: Mapped[list["Check"]] = relationship(
+        back_populates="database", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (UniqueConstraint("project_id", "slug", name="uq_databases_project_slug"),)
 
 
 class Connector(Base):
@@ -94,7 +137,7 @@ class Check(Base):
     schedule: Mapped[str] = mapped_column(String)
     enabled: Mapped[bool] = mapped_column(default=True)
 
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    database_id: Mapped[str] = mapped_column(ForeignKey("databases.id", ondelete="CASCADE"), index=True)
 
     connector_id: Mapped[str] = mapped_column(ForeignKey("connectors.id"))
     secondary_connector_id: Mapped[str | None] = mapped_column(ForeignKey("connectors.id"), nullable=True)
@@ -104,7 +147,7 @@ class Check(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    project: Mapped["Project"] = relationship(back_populates="checks")
+    database: Mapped["Database"] = relationship(back_populates="checks")
     connector: Mapped["Connector"] = relationship(foreign_keys=[connector_id], back_populates="checks")
     secondary_connector: Mapped["Connector | None"] = relationship(foreign_keys=[secondary_connector_id])
     runs: Mapped[list["CheckRun"]] = relationship(back_populates="check", cascade="all, delete-orphan")

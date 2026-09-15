@@ -3,6 +3,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.connectors.registry import build_connector
 from app.connectors.security import encrypt_config_secrets, redact_config_secrets
 from app.connectors.snowflake_connector import test_snowflake_connection
 from app.db import get_db
@@ -96,3 +97,27 @@ def delete_connector(connector_id: str, db: Session = Depends(get_db)):
     db.delete(connector)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/{connector_id}/databases", response_model=list[str])
+def discover_databases(connector_id: str, db: Session = Depends(get_db)):
+    """Databases this connector can actually see.
+
+    Adding a database to a project should be a choice from what exists, not a
+    free-text field where a typo becomes a check that errors at its first run.
+    """
+    connector = db.query(models.Connector).filter_by(id=connector_id).first()
+    if not connector:
+        raise HTTPException(404, "Connector not found")
+
+    handle = build_connector(connector.type, connector.config)
+    try:
+        rows = handle.run_query("SHOW DATABASES")
+    except Exception as error:  # noqa: BLE001 - surfaced to the user as a 400
+        raise HTTPException(400, f"Could not list databases: {error}") from error
+    finally:
+        handle.close()
+
+    # SHOW DATABASES returns a wide row; the database name is under "name".
+    names = [str(row.get("name")) for row in rows if row.get("name")]
+    return sorted(n for n in names if n not in {"SNOWFLAKE", "SNOWFLAKE_SAMPLE_DATA"})

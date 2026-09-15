@@ -11,7 +11,12 @@ router = APIRouter(prefix="/api/tickets", tags=["tickets"])
 def list_tickets(db: Session = Depends(get_db)):
     tickets = (
         db.query(models.Ticket)
-        .options(joinedload(models.Ticket.check_run).joinedload(models.CheckRun.check))
+        .options(
+            joinedload(models.Ticket.check_run)
+            .joinedload(models.CheckRun.check)
+            .joinedload(models.Check.database)
+            .joinedload(models.Database.project)
+        )
         .order_by(models.Ticket.created_at.desc())
         .all()
     )
@@ -21,6 +26,9 @@ def list_tickets(db: Session = Depends(get_db)):
             check_run_id=t.check_run_id,
             check_id=t.check_run.check.id,
             check_name=t.check_run.check.name,
+            database_slug=t.check_run.check.database.slug,
+            database_name=t.check_run.check.database.name,
+            project_slug=t.check_run.check.database.project.slug,
         )
         for t in tickets
     ]

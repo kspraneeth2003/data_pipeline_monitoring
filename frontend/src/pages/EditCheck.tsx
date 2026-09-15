@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { api, type Check, type Connector } from "../lib/api";
 import { CheckForm } from "../components/CheckForm";
 import { Breadcrumbs } from "../components/Breadcrumbs";
@@ -13,7 +13,7 @@ export function EditCheck() {
     if (!id) return;
     api.getCheck(id).then(setCheck);
     api.listProjectConnectors(slug).then(setConnectors);
-  }, [id]);
+  }, [id, slug]);
 
   if (!check || !connectors) return null;
 

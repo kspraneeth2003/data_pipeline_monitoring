@@ -2,13 +2,13 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type ProbeResult } from "../lib/api";
 import { Breadcrumbs } from "../components/Breadcrumbs";
+import { SnowflakeCredentialFields } from "../components/SnowflakeCredentialFields";
 import {
-  SnowflakeCredentialFields,
   credentialsComplete,
   credentialsToConfig,
   emptyCredentials,
   type SnowflakeCredentials,
-} from "../components/SnowflakeCredentialFields";
+} from "../lib/snowflake-credentials";
 
 type Step = 1 | 2 | 3;
 
@@ -71,7 +71,8 @@ export function NewProject() {
   function toggle(database: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(database) ? next.delete(database) : next.add(database);
+      if (next.has(database)) next.delete(database);
+      else next.add(database);
       return next;
     });
   }

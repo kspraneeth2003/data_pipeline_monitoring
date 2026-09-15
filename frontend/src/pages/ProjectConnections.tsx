@@ -3,13 +3,13 @@ import { useParams } from "react-router-dom";
 import { api, type Connector, type Project } from "../lib/api";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { DeleteButton } from "../components/DeleteButton";
+import { SnowflakeCredentialFields } from "../components/SnowflakeCredentialFields";
 import {
-  SnowflakeCredentialFields,
   credentialsComplete,
   credentialsToConfig,
   emptyCredentials,
   type SnowflakeCredentials,
-} from "../components/SnowflakeCredentialFields";
+} from "../lib/snowflake-credentials";
 
 export function ProjectConnections() {
   const { slug = "" } = useParams();

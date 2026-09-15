@@ -23,7 +23,8 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     main.py               FastAPI app, CORS, router registration, scheduler lifecycle
     config.py             Settings (pydantic-settings, reads backend/.env)
     db.py                 SQLAlchemy engine/session
-    models.py             ORM models: Project, Database, Connector, Check, CheckRun, RcaResult, Ticket
+    models.py             ORM models: Project, Database, Connector (project-owned), Check, CheckRun,
+                            RcaResult, Ticket
     schemas.py            Pydantic request/response schemas
     crypto.py             AES-256-GCM encrypt/decrypt for connector secrets
     connectors/
@@ -51,11 +52,12 @@ frontend/                 Vite + React + TypeScript
     lib/api.ts             Typed fetch client for the FastAPI backend (VITE_API_URL, default localhost:8000)
     lib/check-types.ts      UI metadata for check-type form fields (keep in sync with backend/app/checks/config_schemas.py)
     components/             TopNav, Breadcrumbs, HealthPill, StatusBadge, RunNowButton, EnabledToggle,
-                             DeleteButton, CheckForm, NewConnectorForm, TicketBoard
+                             DeleteButton, CheckForm, SnowflakeCredentialFields, TicketBoard
     lib/time.ts             Parses the API's naive-UTC timestamps. Use this, never bare `new Date(iso)` -
                              a bare parse reads them as local time and shifts every timestamp.
-    pages/                  Projects (home), NewProject, ProjectOverview, ProjectChecks,
-                             ProjectTickets, ProjectSettings, Connectors, CheckDetail, NewCheck, EditCheck
+    pages/                  Projects (home), NewProject (setup wizard), ProjectOverview,
+                             ProjectTickets, ProjectConnections, ProjectSettings, NewDatabase,
+                             DatabaseChecks, DatabaseSettings, CheckDetail, NewCheck, EditCheck
     App.tsx                 React Router routes
     index.css               Design tokens (same accent/surface/border scheme as before)
 
@@ -73,12 +75,13 @@ not a database - it spans the databases that together serve one domain.
 /projects/new                                  Create
 /projects/:slug                                Databases in this project, with health
 /projects/:slug/tickets                        Tickets across the project
-/projects/:slug/settings                       Rename, connectors in use, delete
+/projects/:slug/settings                       Rename, connections in use, delete
+/projects/:slug/connections                    Connections owned by this project
 /projects/:slug/databases/new                  Add one (picked from live discovery)
 /projects/:slug/databases/:dbSlug              Checks on this database
 /projects/:slug/databases/:dbSlug/settings     Describe, remove from project
 /projects/:slug/databases/:dbSlug/checks/...   new | :id | :id/edit
-/connectors                                    Workspace-level
+
 ```
 
 A check is *anchored* to the database holding its primary object but may still
@@ -86,8 +89,16 @@ reference sibling databases - a silver-vs-gold parity check legitimately spans
 two. There is no direct check -> project link; the project is reached through
 the database, so the two cannot disagree.
 
-Connectors sit outside the tree: a database is reached through a connector, and
-one Snowflake account serves many databases across many projects.
+Connections belong to the project too - connecting a warehouse is part of
+setting a project up, not a separate administrative step elsewhere. Two
+projects on the same account each hold their own credentials; that is
+deliberate, so deleting or re-credentialling one can never break another.
+
+Setup happens in one pass. `POST /api/connectors/probe` tests credentials and
+returns the identity plus reachable databases without saving anything, so the
+wizard can show what the credentials actually reached and let the user pick
+from a real list. `POST /api/projects/setup` then creates project, connection
+and databases together, testing the connection before the first write.
 
 Health takes the worst state rather than an average at every level - one
 failing check makes its database, and its project, read as failing.

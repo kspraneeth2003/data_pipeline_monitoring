@@ -23,7 +23,7 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     main.py               FastAPI app, CORS, router registration, scheduler lifecycle
     config.py             Settings (pydantic-settings, reads backend/.env)
     db.py                 SQLAlchemy engine/session
-    models.py             ORM models: Connector, Check, CheckRun, RcaResult, Ticket
+    models.py             ORM models: Project, Connector, Check, CheckRun, RcaResult, Ticket
     schemas.py            Pydantic request/response schemas
     crypto.py             AES-256-GCM encrypt/decrypt for connector secrets
     connectors/
@@ -34,12 +34,15 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     checks/
       config_schemas.py   Pydantic model per check type (mirrors the old Zod schemas)
       engine.py           run_check(...) -> CheckOutcome (PASSED/FAILED/ERROR + metrics)
+      b2s_parity.py       BRONZE_TO_SILVER_PARITY: builds the single deterministic SQL statement
+                            that proves silver is a deduplicated, lossless projection of bronze.
+                            See the module docstring for why it is a FULL OUTER JOIN and not EXCEPT.
       runner.py           execute_check(db, check_id): persists a run, triggers RCA + ticket on failure
     rca/                  THE AGENTIC PART - see below
     tickets/
       mock_ticket.py       Files a mock ticket (simulated Jira) from an RCA result
     scheduler.py           APScheduler background scheduler, resyncs cron jobs from the DB every 30s
-    routers/               checks.py, connectors.py, tickets.py - FastAPI routers
+    routers/               projects.py, checks.py, connectors.py, tickets.py - FastAPI routers
     seed.py                Seeds 1 connector + 4 example checks (`python -m app.seed`)
   alembic/                 Migrations (env.py wired to app.db.Base.metadata + app.config.settings)
 
@@ -47,15 +50,39 @@ frontend/                 Vite + React + TypeScript
   src/
     lib/api.ts             Typed fetch client for the FastAPI backend (VITE_API_URL, default localhost:8000)
     lib/check-types.ts      UI metadata for check-type form fields (keep in sync with backend/app/checks/config_schemas.py)
-    components/             TopNav, StatusBadge, RunNowButton, EnabledToggle, DeleteButton, CheckForm,
-                             NewConnectorForm, TicketBoard
-    pages/                  Dashboard, Connectors, Tickets, CheckDetail, NewCheck, EditCheck
+    components/             TopNav, Breadcrumbs, HealthPill, StatusBadge, RunNowButton, EnabledToggle,
+                             DeleteButton, CheckForm, NewConnectorForm, TicketBoard
+    lib/time.ts             Parses the API's naive-UTC timestamps. Use this, never bare `new Date(iso)` -
+                             a bare parse reads them as local time and shifts every timestamp.
+    pages/                  Projects (home), NewProject, ProjectOverview, ProjectChecks,
+                             ProjectTickets, ProjectSettings, Connectors, CheckDetail, NewCheck, EditCheck
     App.tsx                 React Router routes
     index.css               Design tokens (same accent/surface/border scheme as before)
 
 snowflake/                Tracked DDL for the bronze/silver/gold test pipeline - unchanged by the rewrite,
                           this is what the RCA agent's git-history gatherer reads
 ```
+
+### Information architecture
+
+Projects are the top-level unit; a check belongs to exactly one project.
+
+```
+/                              Projects, ranked worst-health first
+/projects/new                  Create
+/projects/:slug                Overview - health, what needs attention
+/projects/:slug/checks         Checks in this project (+ /new, /:id, /:id/edit)
+/projects/:slug/tickets        Tickets for this project only
+/projects/:slug/settings       Rename, connectors in use, delete
+/connectors                    Workspace-level - one account serves many projects
+```
+
+Connectors deliberately sit outside the project tree: a single Snowflake
+account serves several projects, so nesting them would force duplicate
+credentials. Project settings shows which ones a project uses, read-only.
+
+Project health takes the worst state rather than an average - one failing check
+makes the project read as failing.
 
 ### The RCA agent is a LangGraph graph (`backend/app/rca/graph.py`)
 
@@ -128,7 +155,7 @@ npm run dev
 
 - Ticket key generation (`_next_ticket_key` in `mock_ticket.py`) is a best-effort count-based scheme, not a real sequence - fine at this volume, would race under real concurrency
 - No ticket de-duplication/cooldown (PLAN.md FR10) - every failed run files a new ticket
-- `CROSS_SOURCE_PARITY` checks get no RCA object-level evidence gathering yet (only the other 4 check types)
+- `CROSS_SOURCE_PARITY` checks get no RCA object-level evidence gathering yet (every other check type has it)
 - No auth/RBAC on the web app yet (PLAN.md FR16) - anyone with network access can hit the API routes
 - Connector secret encryption uses a single symmetric key in `.env`, not a real secrets manager/KMS
 - The connector edit form (`PATCH /api/connectors/{id}`) exists as an API but has no frontend UI yet - editing credentials currently requires calling the API directly

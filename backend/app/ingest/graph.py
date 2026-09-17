@@ -92,8 +92,13 @@ def _heuristic(state: IngestState) -> IngestState:
     assert parsed is not None
     databases = propose_databases(parsed)
     proposals = propose_checks(parsed)
+    # A concern is surfaced at the top of the review as well as on the check,
+    # because it is a statement about the pipeline, not about the check - and
+    # the one place it must not be is folded away where nobody reads it.
+    concerns = [c for proposal in proposals for c in proposal["concerns"]]
     return {
         **state,
+        "warnings": [*state["warnings"], *concerns],
         "databases": databases,
         "proposals": proposals,
         "project_name": _fallback_name(state["repo_url"]),
@@ -203,6 +208,7 @@ def _validate_llm_check(raw: dict, known_databases: set[str]) -> tuple[CheckProp
         "database": database,
         "config": validated,
         "source": "llm",
+        "concerns": [],
     }, None
 
 

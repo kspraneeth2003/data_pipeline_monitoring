@@ -280,6 +280,7 @@ class ProposedCheck(BaseModel):
     database: str
     config: dict[str, Any]
     source: str
+    concerns: list[str] = []
 
 
 class ProposedDatabase(BaseModel):

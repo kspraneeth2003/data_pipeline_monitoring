@@ -13,6 +13,7 @@ Where the DDL says nothing - what null rate is acceptable, which columns matter
 most - this module proposes nothing, and leaves that to the LLM and the user.
 """
 
+import re
 from typing import TypedDict
 
 from app.ingest.ddl_parser import ParsedMerge, ParsedRepo, ParsedTable
@@ -51,6 +52,7 @@ class CheckProposal(TypedDict):
     database: str
     config: dict
     source: str
+    concerns: list[str]
 
 
 def _database_of(fqn: str) -> str:
@@ -103,6 +105,36 @@ def _tables_by_fqn(parsed: ParsedRepo) -> dict[str, ParsedTable]:
     return {t["fqn"]: t for t in parsed["tables"]}
 
 
+def _payload_key(expression: str) -> str | None:
+    """`RAW_PAYLOAD:warehouse::STRING` -> `warehouse`. None if not a VARIANT path."""
+    match = re.search(r":([A-Za-z_][\w$]*)\s*(?:::|$)", expression)
+    return match.group(1) if match else None
+
+
+def _mapping_concerns(merge: ParsedMerge) -> list[str]:
+    """Flags value columns whose payload key does not match the column name.
+
+    This is the limit of deriving a check from a MERGE, and it is worth stating
+    plainly: the generated check asserts that the MERGE did what the MERGE says,
+    not that silver matches the source data. A MERGE reading the wrong payload
+    field produces a check that agrees with it and passes.
+
+    A name mismatch is the visible symptom of exactly that. It is not proof of a
+    bug - a genuine rename looks identical - so this flags rather than fails,
+    and leaves the judgement to the person reviewing the proposal.
+    """
+    concerns: list[str] = []
+    for column in merge["value_columns"]:
+        key = _payload_key(column["source_expr"])
+        if key and key.upper() != column["name"].upper():
+            concerns.append(
+                f"{column['name']} is populated from payload key `{key}`. The names differ, so this "
+                f"check will agree with the MERGE even if the MERGE reads the wrong field - confirm "
+                f"`{key}` is really what the source sends."
+            )
+    return concerns
+
+
 def _b2s_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckProposal | None:
     source, target = merge["source"], merge["target"]
     if not source or not merge["key_columns"]:
@@ -145,6 +177,7 @@ def _b2s_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckPr
             ],
         },
         "source": "heuristic",
+        "concerns": _mapping_concerns(merge),
     }
 
 
@@ -169,6 +202,7 @@ def _row_count_proposal(merge: ParsedMerge) -> CheckProposal | None:
         "database": _database_of(source),
         "config": {"object": source, "comparisonObject": target, "toleranceAbs": 0},
         "source": "heuristic",
+        "concerns": [],
     }
 
 
@@ -203,6 +237,7 @@ def _freshness_proposal(
             "maxAgeMinutes": max_age,
         },
         "source": "heuristic",
+        "concerns": [],
     }
 
 
@@ -230,6 +265,7 @@ def _schema_drift_proposal(table: ParsedTable) -> CheckProposal | None:
             ],
         },
         "source": "heuristic",
+        "concerns": [],
     }
 
 

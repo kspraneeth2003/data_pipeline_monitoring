@@ -20,6 +20,9 @@ frontend/.env
 # snowflake mcp credentials
 .mcp/
 
+# ingested repositories - working copies of other people's repos, re-clonable
+backend/.repo-cache/
+
 # misc
 .DS_Store
 *.pem

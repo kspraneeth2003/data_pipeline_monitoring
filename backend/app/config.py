@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     rca_llm_command: str = "claude"
     anthropic_api_key: str | None = None
 
+    # Where ingested repositories are checked out. These are working copies, not
+    # data: deleting the directory costs a re-clone and nothing else.
+    repo_cache_dir: str = ".repo-cache"
+    ingest_llm_timeout_seconds: int = 180
+
     cors_origins: str = "http://localhost:5173"
 
 

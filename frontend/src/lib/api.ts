@@ -102,6 +102,50 @@ export type Database = {
   health: ProjectHealth;
 };
 
+export type ProposedCheck = {
+  key: string;
+  name: string;
+  description: string;
+  rationale: string;
+  type: string;
+  schedule: string;
+  database: string;
+  config: Record<string, unknown>;
+  source: "heuristic" | "llm";
+  concerns: string[];
+};
+
+export type ProposedDatabase = {
+  name: string;
+  description: string;
+  repo_paths: Record<string, string>;
+  tables: string[];
+};
+
+export type RepoAnalysis = {
+  repo_url: string;
+  repo_ref: string | null;
+  repo_commit: string | null;
+  repo_commit_subject: string | null;
+  project_name: string;
+  project_description: string;
+  databases: ProposedDatabase[];
+  checks: ProposedCheck[];
+  sql_files: string[];
+  table_count: number;
+  llm_error: string | null;
+  warnings: string[];
+};
+
+export type IngestJob = {
+  id: string;
+  status: "RUNNING" | "DONE" | "ERROR";
+  stage: string;
+  repo_url: string;
+  error: string | null;
+  analysis: RepoAnalysis | null;
+};
+
 export type Project = {
   id: string;
   slug: string;
@@ -177,6 +221,13 @@ export const api = {
     request<Check>(`/api/checks/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteCheck: (id: string) => request<{ ok: true }>(`/api/checks/${id}`, { method: "DELETE" }),
   runCheck: (id: string) => request<{ run_id: string }>(`/api/checks/${id}/run`, { method: "POST" }),
+
+  startIngestion: (payload: { repo_url: string; token?: string; ref?: string }) =>
+    request<IngestJob>("/api/ingest", { method: "POST", body: JSON.stringify(payload) }),
+  getIngestion: (jobId: string) => request<IngestJob>(`/api/ingest/${jobId}`),
+  discardIngestion: (jobId: string) => request<void>(`/api/ingest/${jobId}`, { method: "DELETE" }),
+  createProjectFromIngestion: (jobId: string, payload: Record<string, unknown>) =>
+    request<Project>(`/api/ingest/${jobId}/project`, { method: "POST", body: JSON.stringify(payload) }),
 
   probeConnection: (payload: Record<string, unknown>) =>
     request<ProbeResult>("/api/connectors/probe", { method: "POST", body: JSON.stringify(payload) }),

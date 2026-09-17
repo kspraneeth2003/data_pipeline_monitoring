@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { TopNav } from "./components/TopNav";
 import { Projects } from "./pages/Projects";
 import { NewProject } from "./pages/NewProject";
+import { NewProjectManual } from "./pages/NewProjectManual";
 import { ProjectOverview } from "./pages/ProjectOverview";
 import { ProjectTickets } from "./pages/ProjectTickets";
 import { ProjectSettings } from "./pages/ProjectSettings";
@@ -28,6 +29,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Projects />} />
         <Route path="/projects/new" element={<NewProject />} />
+        <Route path="/projects/new/manual" element={<NewProjectManual />} />
         <Route path="/projects/:slug" element={<ProjectOverview />} />
         <Route path="/projects/:slug/tickets" element={<ProjectTickets />} />
         <Route path="/projects/:slug/settings" element={<ProjectSettings />} />

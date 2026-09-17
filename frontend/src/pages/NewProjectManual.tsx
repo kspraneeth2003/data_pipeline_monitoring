@@ -13,7 +13,12 @@ import {
 type Step = 1 | 2 | 3;
 
 /**
- * Setup in one pass: name it, connect it, pick its databases.
+ * Manual setup: name it, connect it, pick its databases.
+ *
+ * The default path is now repository ingestion (see NewProject.tsx), which
+ * derives the databases and a starting set of checks from the DDL. This stays
+ * for the case that one cannot serve: a warehouse whose pipeline is not
+ * defined as code anywhere, where there is nothing to read.
  *
  * The connection is *probed* at step 2 - credentials are tested and the real
  * database list comes back - but nothing is written until the final submit. So
@@ -22,7 +27,7 @@ type Step = 1 | 2 | 3;
  * actually see, which also surfaces "connected, but this role sees nothing"
  * immediately rather than as a failing check tomorrow.
  */
-export function NewProject() {
+export function NewProjectManual() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>(1);
 
@@ -79,7 +84,7 @@ export function NewProject() {
 
   return (
     <main className="mx-auto max-w-2xl px-6 py-10 sm:px-10">
-      <Breadcrumbs items={[{ label: "Projects", to: "/" }, { label: "New project" }]} />
+      <Breadcrumbs items={[{ label: "Projects", to: "/" }, { label: "New project", to: "/projects/new" }, { label: "Manual" }]} />
 
       <header className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight text-foreground">New project</h1>

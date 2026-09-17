@@ -21,6 +21,7 @@ a check that will error on first run.
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TypedDict
 
@@ -46,6 +47,10 @@ VALID_SCHEDULE_TYPES = set(CONFIG_SCHEMAS_BY_TYPE)
 
 
 class IngestState(TypedDict):
+    # Reports which node is running, so a 90-second analysis can say what it is
+    # doing instead of showing an unmoving spinner.
+    on_stage: Callable[[str], None]
+
     repo_url: str
     token: str | None
     ref: str | None
@@ -63,11 +68,13 @@ class IngestState(TypedDict):
 
 
 def _fetch(state: IngestState) -> IngestState:
+    state["on_stage"]("fetch")
     checkout = fetch_repo(state["repo_url"], state["token"], state["ref"])
     return {**state, "checkout": checkout}
 
 
 def _parse(state: IngestState) -> IngestState:
+    state["on_stage"]("parse")
     checkout = state["checkout"]
     assert checkout is not None
     parsed = parse_repo(Path(checkout["path"]))
@@ -80,6 +87,7 @@ def _fallback_name(repo_url: str) -> str:
 
 
 def _heuristic(state: IngestState) -> IngestState:
+    state["on_stage"]("heuristic")
     parsed = state["parsed"]
     assert parsed is not None
     databases = propose_databases(parsed)
@@ -199,6 +207,7 @@ def _validate_llm_check(raw: dict, known_databases: set[str]) -> tuple[CheckProp
 
 
 def _llm_enrich(state: IngestState) -> IngestState:
+    state["on_stage"]("llm_enrich")
     if not state["databases"]:
         # Nothing was parsed, so there is nothing for the model to reason about.
         return {**state, "llm_error": None}
@@ -260,7 +269,12 @@ _graph.add_edge("llm_enrich", END)
 ingest_graph = _graph.compile()
 
 
-def analyze_repository(repo_url: str, token: str | None = None, ref: str | None = None) -> dict:
+def analyze_repository(
+    repo_url: str,
+    token: str | None = None,
+    ref: str | None = None,
+    on_stage: Callable[[str], None] | None = None,
+) -> dict:
     """Runs the ingestion agent and returns a reviewable analysis.
 
     Raises `RepoError` if the repository cannot be fetched at all - that is the
@@ -268,6 +282,7 @@ def analyze_repository(repo_url: str, token: str | None = None, ref: str | None 
     failure degrades into a warning.
     """
     initial: IngestState = {
+        "on_stage": on_stage or (lambda _stage: None),
         "repo_url": repo_url,
         "token": token,
         "ref": ref,

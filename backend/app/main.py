@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import checks, connectors, projects, tickets
+from app.routers import checks, connectors, ingest, projects, tickets
 from app.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +28,7 @@ app.add_middleware(
 )
 
 app.include_router(projects.router)
+app.include_router(ingest.router)
 app.include_router(connectors.router)
 app.include_router(checks.router)
 app.include_router(tickets.router)

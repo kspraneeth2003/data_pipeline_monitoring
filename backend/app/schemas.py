@@ -255,3 +255,79 @@ class DatabaseWithHealthOut(DatabaseOut):
 class ProjectWithHealthOut(ProjectOut):
     health: ProjectHealth
     databases: list[DatabaseWithHealthOut] = []
+
+
+# --- Repository ingestion ------------------------------------------------
+
+
+class RepoIngestRequest(BaseModel):
+    """Start an analysis. The token is used for the git fetch and then dropped -
+    it is never stored, because nothing the app does later needs to read the
+    repository again with the user's credentials."""
+
+    repo_url: str
+    token: str | None = None
+    ref: str | None = None
+
+
+class ProposedCheck(BaseModel):
+    key: str
+    name: str
+    description: str
+    rationale: str
+    type: str
+    schedule: str
+    database: str
+    config: dict[str, Any]
+    source: str
+
+
+class ProposedDatabase(BaseModel):
+    name: str
+    description: str
+    repo_paths: dict[str, str]
+    tables: list[str]
+
+
+class RepoAnalysisOut(BaseModel):
+    repo_url: str
+    repo_ref: str | None
+    repo_commit: str | None
+    repo_commit_subject: str | None
+    project_name: str
+    project_description: str
+    databases: list[ProposedDatabase]
+    checks: list[ProposedCheck]
+    sql_files: list[str]
+    table_count: int
+    llm_error: str | None
+    warnings: list[str]
+
+
+class RepoIngestJobOut(BaseModel):
+    id: str
+    status: str
+    stage: str
+    repo_url: str
+    error: str | None
+    analysis: RepoAnalysisOut | None
+
+
+class RepoProjectCreate(BaseModel):
+    """Confirm an analysis into a real project.
+
+    Credentials arrive here rather than at analysis time: the repository
+    describes the pipeline's structure, which is knowable without touching
+    Snowflake, so making the user find credentials before they can see what the
+    tool found is a needless gate.
+    """
+
+    name: str
+    description: str | None = None
+    connector_name: str = "snowflake"
+    connector_type: str = "SNOWFLAKE"
+    config: dict[str, Any] = {}
+
+    # Which of the proposals to actually create. Absent means "all of them".
+    databases: list[str] | None = None
+    checks: list[str] | None = None

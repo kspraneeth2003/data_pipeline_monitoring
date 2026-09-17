@@ -7,6 +7,7 @@ from app import models
 from app.checks.engine import run_check
 from app.models import cuid
 from app.rca.graph import generate_rca
+from app.rca.object_repo_map import build_repo_context
 from app.tickets.mock_ticket import create_mock_ticket
 
 
@@ -47,6 +48,7 @@ def execute_check(db: Session, check_id: str) -> str:
             connector_config=connector.config,
             message=outcome.message,
             metrics=outcome.metrics,
+            repo=build_repo_context(check),
         )
         db.add(
             models.RcaResult(

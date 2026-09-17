@@ -65,6 +65,17 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Where this project's pipeline is defined as code. Set when the project was
+    # created by ingesting a repository; null for hand-built projects.
+    #
+    # `repo_commit` is the commit the project was derived from, not a live
+    # pointer - it records what the proposals were read out of, so a later
+    # "these checks no longer match the repo" is answerable.
+    repo_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo_commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    repo_path: Mapped[str | None] = mapped_column(String, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -103,6 +114,12 @@ class Database(Base):
     name: Mapped[str] = mapped_column(String)
     slug: Mapped[str] = mapped_column(String, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Schema name -> the file in the project's repository that defines it, e.g.
+    # {"BRONZE": "snowflake/dpm_src_crm/bronze.sql"}. This is the per-project
+    # replacement for the hardcoded map in rca/object_repo_map.py: it is what
+    # lets RCA attribute a failing object to a commit and an author.
+    repo_paths: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

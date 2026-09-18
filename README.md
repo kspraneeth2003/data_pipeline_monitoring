@@ -4,7 +4,7 @@ An agentic data integrity/parity check engine for Snowflake: scheduled checks, L
 
 Work is organized **project -> database -> check**. A project is a data product (Customer 360) spanning the databases that serve it; checks live inside a database. The home page ranks projects by health so whatever is broken is the first thing you see.
 
-You start a project by pasting the **git URL of the repository that defines your pipeline**. The DDL is parsed for databases, schemas and MERGE statements; checks are derived from what it says (a MERGE states the key and column mapping, a task's `SCHEDULE` states the freshness threshold, a `CREATE TABLE` states the column contract); an agent adds the ones rules cannot derive. You review the proposal, then supply Snowflake credentials, and nothing is written until you do. Setup without a repository is still available at `/projects/new/manual`.
+You start a project by naming the **repository that defines your pipeline** - picked from GitHub, or pasted as a URL. The DDL is parsed for databases, schemas and MERGE statements; checks are derived from what it says (a MERGE states the key and column mapping, a task's `SCHEDULE` states the freshness threshold, a `CREATE TABLE` states the column contract); an agent adds the ones rules cannot derive. You review the proposal, then supply Snowflake credentials, and nothing is written until you do. Setup without a repository is still available at `/projects/new/manual`.
 
 See [PLAN.md](./PLAN.md) for requirements/milestones and [STATUS.md](./STATUS.md) for current state and setup instructions.
 

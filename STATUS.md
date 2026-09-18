@@ -185,6 +185,47 @@ Deriving from the column name instead would be worse - a legitimate rename is in
 a bug, so every renamed column would fail forever. So `heuristic._mapping_concerns` *flags* the
 name mismatch on the check and in the analysis warnings, and leaves the judgement to the reviewer.
 
+### Connecting GitHub (optional)
+
+Setup offers two ways to name a repository: pick one from GitHub, or paste a URL.
+The second always works (GitLab, Bitbucket, self-hosted). The first needs a GitHub App
+registered once, and everything degrades cleanly without it - `/api/github/status` returns
+`configured: false` and the UI falls back to paste-a-URL on its own.
+
+A **GitHub App**, not "Sign in with GitHub", and the difference is the point: signing in
+grants access to everything the user can see, whereas an App is installed *onto selected
+repositories*. GitHub asks "grant read access to these?" and then enforces it - the app
+cannot reach a repository it was not given.
+
+To register it (free; no Marketplace listing needed):
+
+1. GitHub -> Settings -> Developer settings -> GitHub Apps -> **New GitHub App**
+2. **Homepage URL** `http://localhost:5173`, **Callback URL**
+   `http://localhost:8000/api/github/callback`
+3. **Uncheck Webhook -> Active.** Webhooks are only needed for push-driven re-analysis,
+   which is not built; leaving it on means GitHub tries to reach a URL that does not exist.
+4. Permissions: **Repository -> Contents -> Read-only**. Nothing else.
+5. Create, note the **App ID**, then **Generate a private key** and save the `.pem`.
+6. In `backend/.env`:
+
+   ```
+   GITHUB_APP_ID=123456
+   GITHUB_APP_SLUG=your-app-name-as-in-its-url
+   GITHUB_APP_PRIVATE_KEY_PATH=C:/path/to/your-app.private-key.pem
+   ```
+
+   `GITHUB_APP_SLUG` is the last path segment of the app's public page, which is what
+   builds the install link. The `.pem` is a secret on the same footing as
+   `CONNECTOR_SECRET_KEY` - never commit it.
+7. Restart the backend. "From GitHub" appears in setup; the first click goes to GitHub to
+   choose repositories.
+
+Implementation notes that matter if you change this: the installation token is minted in
+`graph._fetch` at clone time and never returned to the browser; installation state is
+queried live rather than stored, so uninstalling on GitHub takes effect immediately; and
+`/status` is written never to raise, because a broken GitHub must narrow the options
+rather than break the setup screen.
+
 ### The object -> repo file map is per-project
 
 `rca/object_repo_map.py` used to be a hardcoded dict of this repo's own `snowflake/` paths, so RCA
@@ -239,7 +280,7 @@ npm install
 npm run dev
 ```
 
-`backend/.env` (gitignored) needs: `DATABASE_URL`, `CONNECTOR_SECRET_KEY` (generate your own - see comment in the file), legacy `SNOWFLAKE_*` vars (only used by the seeded `snowflake-default` connector), `RCA_LLM_COMMAND` (defaults to `claude`). `ANTHROPIC_API_KEY`/`JIRA_*`/`GITHUB_TOKEN` are unused/stubbed.
+`backend/.env` (gitignored) needs: `DATABASE_URL`, `CONNECTOR_SECRET_KEY` (generate your own - see comment in the file), legacy `SNOWFLAKE_*` vars (only used by the seeded `snowflake-default` connector), `RCA_LLM_COMMAND` (defaults to `claude`). Optionally `GITHUB_APP_ID`/`GITHUB_APP_SLUG`/`GITHUB_APP_PRIVATE_KEY_PATH` for the GitHub picker - see "Connecting GitHub". `ANTHROPIC_API_KEY`/`JIRA_*`/`GITHUB_TOKEN` are unused/stubbed.
 
 `frontend/.env` (optional, gitignored): `VITE_API_URL` if the backend isn't at `http://localhost:8000`.
 

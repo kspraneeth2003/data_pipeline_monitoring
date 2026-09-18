@@ -137,6 +137,24 @@ export type RepoAnalysis = {
   warnings: string[];
 };
 
+export type GitHubRepository = {
+  full_name: string;
+  clone_url: string;
+  private: boolean;
+  default_branch: string;
+  description: string | null;
+  pushed_at: string | null;
+  installation_id: number;
+  account: string;
+};
+
+export type GitHubStatus = {
+  configured: boolean;
+  install_url: string | null;
+  installations: { id: number; account: string; repository_selection: string }[];
+  error: string | null;
+};
+
 export type IngestJob = {
   id: string;
   status: "RUNNING" | "DONE" | "ERROR";
@@ -222,7 +240,15 @@ export const api = {
   deleteCheck: (id: string) => request<{ ok: true }>(`/api/checks/${id}`, { method: "DELETE" }),
   runCheck: (id: string) => request<{ run_id: string }>(`/api/checks/${id}/run`, { method: "POST" }),
 
-  startIngestion: (payload: { repo_url: string; token?: string; ref?: string }) =>
+  getGitHubStatus: () => request<GitHubStatus>("/api/github/status"),
+  listGitHubRepositories: () => request<GitHubRepository[]>("/api/github/repositories"),
+
+  startIngestion: (payload: {
+    repo_url: string;
+    token?: string;
+    ref?: string;
+    installation_id?: number;
+  }) =>
     request<IngestJob>("/api/ingest", { method: "POST", body: JSON.stringify(payload) }),
   getIngestion: (jobId: string) => request<IngestJob>(`/api/ingest/${jobId}`),
   discardIngestion: (jobId: string) => request<void>(`/api/ingest/${jobId}`, { method: "DELETE" }),

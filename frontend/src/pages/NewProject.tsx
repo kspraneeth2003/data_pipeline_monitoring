@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, type IngestJob, type ProposedCheck, type RepoAnalysis } from "../lib/api";
+import {
+  api,
+  type GitHubRepository,
+  type GitHubStatus,
+  type IngestJob,
+  type ProposedCheck,
+  type RepoAnalysis,
+} from "../lib/api";
+import { GitHubRepoPicker } from "../components/GitHubRepoPicker";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { SnowflakeCredentialFields } from "../components/SnowflakeCredentialFields";
 import {
@@ -11,8 +19,37 @@ import {
 } from "../lib/snowflake-credentials";
 
 type Step = 1 | 2 | 3;
+type Source = "github" | "url";
 
 const POLL_INTERVAL_MS = 1500;
+
+/**
+ * Fetches GitHub state without touching React state.
+ *
+ * The paste-a-URL path does not depend on GitHub at all, so anything going
+ * wrong here has to narrow the options rather than break the screen - hence
+ * an unconfigured-looking result on failure instead of a thrown error.
+ */
+async function fetchGitHub(): Promise<{
+  status: GitHubStatus;
+  repositories: GitHubRepository[];
+}> {
+  try {
+    const status = await api.getGitHubStatus();
+    // Only ask for repositories when there is something to ask about, so an
+    // unconfigured server does not hit the GitHub API to be told "nothing".
+    const repositories =
+      status.configured && !status.error && status.installations.length > 0
+        ? await api.listGitHubRepositories()
+        : [];
+    return { status, repositories };
+  } catch {
+    return {
+      status: { configured: false, install_url: null, installations: [], error: null },
+      repositories: [],
+    };
+  }
+}
 
 /**
  * Setup driven by the repository that defines the pipeline.
@@ -31,10 +68,19 @@ export function NewProject() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>(1);
 
+  const [source, setSource] = useState<Source>("github");
   const [repoUrl, setRepoUrl] = useState("");
   const [token, setToken] = useState("");
   const [ref, setRef] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const [repositories, setRepositories] = useState<GitHubRepository[]>([]);
+  // Starts true: the mount-time load is already in flight by first paint, so
+  // initialising here rather than setting it from the effect keeps the effect
+  // free of synchronous state updates.
+  const [loadingRepos, setLoadingRepos] = useState(true);
+  const [reloadCount, setReloadCount] = useState(0);
 
   const [job, setJob] = useState<IngestJob | null>(null);
   const [analysis, setAnalysis] = useState<RepoAnalysis | null>(null);
@@ -62,6 +108,25 @@ export function NewProject() {
   }, []);
 
   useEffect(() => {
+    // Split deliberately: fetchGitHub only fetches, the effect only applies.
+    // Keeping every setState behind an await (and behind the `active` guard)
+    // means no synchronous state update runs during the effect, and nothing
+    // is written after the page has been navigated away from.
+    let active = true;
+    void (async () => {
+      const result = await fetchGitHub();
+      if (!active) return;
+      setGithubStatus(result.status);
+      setRepositories(result.repositories);
+      if (!result.status.configured) setSource("url");
+      setLoadingRepos(false);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [reloadCount]);
+
+  useEffect(() => {
     if (!job || job.status !== "RUNNING") return;
     const timer = setTimeout(async () => {
       try {
@@ -77,16 +142,16 @@ export function NewProject() {
     return () => clearTimeout(timer);
   }, [job, applyAnalysis]);
 
-  async function analyze(event: React.FormEvent) {
-    event.preventDefault();
+  async function start(payload: {
+    repo_url: string;
+    token?: string;
+    ref?: string;
+    installation_id?: number;
+  }) {
     setBusy(true);
     setError(null);
     try {
-      const started = await api.startIngestion({
-        repo_url: repoUrl.trim(),
-        token: token.trim() || undefined,
-        ref: ref.trim() || undefined,
-      });
+      const started = await api.startIngestion(payload);
       jobIdRef.current = started.id;
       setJob(started);
     } catch (e) {
@@ -94,6 +159,27 @@ export function NewProject() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function analyze(event: React.FormEvent) {
+    event.preventDefault();
+    await start({
+      repo_url: repoUrl.trim(),
+      token: token.trim() || undefined,
+      ref: ref.trim() || undefined,
+    });
+  }
+
+  async function pickRepository(repository: GitHubRepository) {
+    setRepoUrl(repository.clone_url);
+    // The installation id goes over instead of a credential: the server mints
+    // a short-lived token from it at clone time, so nothing readable ever
+    // passes through the browser.
+    await start({
+      repo_url: repository.clone_url,
+      ref: repository.default_branch,
+      installation_id: repository.installation_id,
+    });
   }
 
   async function finish() {
@@ -192,7 +278,44 @@ export function NewProject() {
       )}
 
       {step === 1 && (
-        <form onSubmit={analyze} className="space-y-5 rounded-xl border border-border bg-surface p-6">
+        <div className="space-y-5 rounded-xl border border-border bg-surface p-6">
+          <div className="flex gap-1 rounded-lg border border-border bg-background p-1">
+            {([
+              { key: "github" as Source, label: "From GitHub" },
+              { key: "url" as Source, label: "From a URL" },
+            ]).map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => setSource(option.key)}
+                disabled={analyzing}
+                className={`flex-1 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  source === option.key
+                    ? "bg-accent text-accent-foreground shadow-sm"
+                    : "text-zinc-500 hover:text-foreground"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+
+          {source === "github" && githubStatus && (
+            <GitHubRepoPicker
+              status={githubStatus}
+              repositories={repositories}
+              loading={loadingRepos}
+              disabled={busy || Boolean(analyzing)}
+              onPick={pickRepository}
+              onRefresh={() => {
+                setLoadingRepos(true);
+                setReloadCount((n) => n + 1);
+              }}
+            />
+          )}
+
+          {source === "url" && (
+        <form onSubmit={analyze} className="space-y-5">
           <div>
             <label htmlFor="repo" className="block text-sm font-medium text-foreground">
               Repository URL
@@ -258,13 +381,6 @@ export function NewProject() {
             </div>
           )}
 
-          {analyzing && (
-            <div className="flex items-center gap-3 rounded-lg border border-accent/30 bg-accent-soft/40 px-4 py-3 text-sm">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
-              <span className="text-foreground">{job?.stage}…</span>
-            </div>
-          )}
-
           <div className="flex items-center gap-3">
             <button
               type="submit"
@@ -273,11 +389,24 @@ export function NewProject() {
             >
               {analyzing ? "Analysing…" : "Analyse repository"}
             </button>
-            <Link to="/projects/new/manual" className="text-sm text-zinc-500 transition-colors hover:text-foreground">
-              Set up without a repository
-            </Link>
           </div>
         </form>
+          )}
+
+          {analyzing && (
+            <div className="flex items-center gap-3 rounded-lg border border-accent/30 bg-accent-soft/40 px-4 py-3 text-sm">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+              <span className="text-foreground">{job?.stage}…</span>
+            </div>
+          )}
+
+          <Link
+            to="/projects/new/manual"
+            className="inline-block text-sm text-zinc-500 transition-colors hover:text-foreground"
+          >
+            Set up without a repository
+          </Link>
+        </div>
       )}
 
       {step === 2 && analysis && (

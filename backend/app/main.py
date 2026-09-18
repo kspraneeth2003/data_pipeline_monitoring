@@ -29,6 +29,7 @@ app.add_middleware(
 
 app.include_router(projects.router)
 app.include_router(ingest.router)
+app.include_router(ingest.github_router)
 app.include_router(connectors.router)
 app.include_router(checks.router)
 app.include_router(tickets.router)

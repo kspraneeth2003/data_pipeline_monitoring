@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, TypedDict
 
 from app.ingest.graph import analyze_repository
+from app.ingest.github import GitHubError
 from app.ingest.repo import RepoError
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,9 @@ def _evict_expired() -> None:
             del _jobs[job_id]
 
 
-def start_analysis(repo_url: str, token: str | None, ref: str | None) -> str:
+def start_analysis(
+    repo_url: str, token: str | None, ref: str | None, installation_id: int | None = None
+) -> str:
     _evict_expired()
     job_id = uuid.uuid4().hex
     with _lock:
@@ -92,9 +95,10 @@ def start_analysis(repo_url: str, token: str | None, ref: str | None) -> str:
                 token,
                 ref,
                 on_stage=lambda name: _set(job_id, stage=STAGES.get(name, name)),
+                installation_id=installation_id,
             )
             _set(job_id, status="DONE", stage="Done", analysis=analysis)
-        except RepoError as error:
+        except (RepoError, GitHubError) as error:
             # The user can fix this one - a bad URL, a private repo, a bad token.
             _set(job_id, status="ERROR", error=str(error))
         except Exception as error:  # noqa: BLE001

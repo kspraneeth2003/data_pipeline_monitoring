@@ -261,13 +261,19 @@ class ProjectWithHealthOut(ProjectOut):
 
 
 class RepoIngestRequest(BaseModel):
-    """Start an analysis. The token is used for the git fetch and then dropped -
-    it is never stored, because nothing the app does later needs to read the
-    repository again with the user's credentials."""
+    """Start an analysis.
+
+    Two ways to authenticate, and the difference matters. `installation_id`
+    names a GitHub App installation the user granted; the server mints a
+    short-lived token for it at clone time, so no credential travels through
+    the browser. `token` is the manual fallback - used for the fetch and then
+    dropped, never stored.
+    """
 
     repo_url: str
     token: str | None = None
     ref: str | None = None
+    installation_id: int | None = None
 
 
 class ProposedCheck(BaseModel):
@@ -332,3 +338,28 @@ class RepoProjectCreate(BaseModel):
     # Which of the proposals to actually create. Absent means "all of them".
     databases: list[str] | None = None
     checks: list[str] | None = None
+
+
+class GitHubRepositoryOut(BaseModel):
+    full_name: str
+    clone_url: str
+    private: bool
+    default_branch: str
+    description: str | None
+    pushed_at: str | None
+    installation_id: int
+    account: str
+
+
+class GitHubStatusOut(BaseModel):
+    """What the setup screen needs to decide which path to offer.
+
+    `configured` is about the server (is a GitHub app set up at all), while
+    `installations` is about this user (have they granted anything yet). The
+    two failure modes need different wording, so they stay separate fields.
+    """
+
+    configured: bool
+    install_url: str | None
+    installations: list[dict[str, Any]]
+    error: str | None = None

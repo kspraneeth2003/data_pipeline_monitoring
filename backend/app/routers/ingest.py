@@ -2,6 +2,10 @@
 
 Three calls, in the order the user meets them:
 
+    GET  /api/github/status       is GitHub set up, and what has been granted
+    GET  /api/github/repositories the repositories the user granted read access to
+    GET  /api/github/callback     where GitHub returns after the consent screen
+
     POST /api/ingest              start analysing a repository  -> job id
     GET  /api/ingest/{job_id}     poll for progress and the proposal
     POST /api/ingest/{job_id}/project   confirm it into a real project
@@ -16,13 +20,15 @@ after testing the connection, so a project never exists half-configured.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app import models, schemas
 from app.connectors.security import encrypt_config_secrets
 from app.connectors.snowflake_connector import test_snowflake_connection
 from app.db import get_db
-from app.ingest import jobs
+from app.config import settings
+from app.ingest import github, jobs
 from app.ingest.repo import RepoError, normalize_repo_url
 from app.routers.projects import (
     _project_out,
@@ -41,7 +47,9 @@ def start_ingestion(payload: schemas.RepoIngestRequest, db: Session = Depends(ge
     except RepoError as error:
         raise HTTPException(400, str(error)) from error
 
-    job_id = jobs.start_analysis(repo_url, payload.token, payload.ref)
+    job_id = jobs.start_analysis(
+        repo_url, payload.token, payload.ref, payload.installation_id
+    )
     job = jobs.get_job(job_id)
     assert job is not None
     return job
@@ -161,3 +169,60 @@ def _selected(requested: list[str] | None, available: list[str]) -> set[str]:
     if requested is None:
         return set(available)
     return {name for name in requested if name in set(available)}
+
+
+# --- GitHub App ----------------------------------------------------------
+
+github_router = APIRouter(prefix="/api/github", tags=["github"])
+
+
+@github_router.get("/status", response_model=schemas.GitHubStatusOut)
+def github_status():
+    """Whether GitHub is usable, and what has been granted so far.
+
+    Never raises. A misconfigured or unreachable GitHub must not break the
+    setup screen - the paste-a-URL path still works, and the screen needs to be
+    able to say so rather than fail to render.
+    """
+    if not github.is_configured():
+        return schemas.GitHubStatusOut(configured=False, install_url=None, installations=[])
+    try:
+        return schemas.GitHubStatusOut(
+            configured=True,
+            install_url=github.install_url(),
+            installations=github.list_installations(),
+        )
+    except github.GitHubError as error:
+        return schemas.GitHubStatusOut(
+            configured=True,
+            install_url=github.install_url(),
+            installations=[],
+            error=str(error),
+        )
+
+
+@github_router.get("/repositories", response_model=list[schemas.GitHubRepositoryOut])
+def github_repositories():
+    if not github.is_configured():
+        raise HTTPException(400, "GitHub is not configured on this server.")
+    try:
+        return github.list_repositories()
+    except github.GitHubError as error:
+        raise HTTPException(502, str(error)) from error
+
+
+@github_router.get("/callback")
+def github_callback(installation_id: int | None = None, setup_action: str | None = None):
+    """Where GitHub sends the browser after the user grants (or declines) access.
+
+    Nothing is recorded here. GitHub is the source of truth for what was
+    granted, and the next call to /repositories asks it directly - so this only
+    has to put the user back where they were, with enough in the URL for the
+    page to say what happened.
+    """
+    target = (
+        f"{settings.frontend_base_url}/projects/new"
+        f"?github={setup_action or 'install'}"
+        f"{f'&installation_id={installation_id}' if installation_id else ''}"
+    )
+    return RedirectResponse(target, status_code=303)

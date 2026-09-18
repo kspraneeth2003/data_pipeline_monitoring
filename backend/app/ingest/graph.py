@@ -31,6 +31,7 @@ from langgraph.graph import END, StateGraph
 from app.checks.config_schemas import CONFIG_SCHEMAS_BY_TYPE
 from app.config import settings
 from app.ingest.ddl_parser import ParsedRepo, parse_repo
+from app.ingest import github
 from app.ingest.heuristic import CheckProposal, propose_checks, propose_databases
 from app.ingest.repo import RepoCheckout, fetch_repo
 from app.rca.llm import ClaudeCliChatModel, extract_json
@@ -54,6 +55,7 @@ class IngestState(TypedDict):
     repo_url: str
     token: str | None
     ref: str | None
+    installation_id: int | None
 
     checkout: RepoCheckout | None
     parsed: ParsedRepo | None
@@ -69,7 +71,12 @@ class IngestState(TypedDict):
 
 def _fetch(state: IngestState) -> IngestState:
     state["on_stage"]("fetch")
-    checkout = fetch_repo(state["repo_url"], state["token"], state["ref"])
+    # Minted here rather than passed in, so the token is as short-lived as
+    # possible and never sits in a job record or a request body.
+    token = state["token"]
+    if state["installation_id"] is not None:
+        token = github.clone_token_for(state["installation_id"])
+    checkout = fetch_repo(state["repo_url"], token, state["ref"])
     return {**state, "checkout": checkout}
 
 
@@ -280,6 +287,7 @@ def analyze_repository(
     token: str | None = None,
     ref: str | None = None,
     on_stage: Callable[[str], None] | None = None,
+    installation_id: int | None = None,
 ) -> dict:
     """Runs the ingestion agent and returns a reviewable analysis.
 
@@ -292,6 +300,7 @@ def analyze_repository(
         "repo_url": repo_url,
         "token": token,
         "ref": ref,
+        "installation_id": installation_id,
         "checkout": None,
         "parsed": None,
         "project_name": "",

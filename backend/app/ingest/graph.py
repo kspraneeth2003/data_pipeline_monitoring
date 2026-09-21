@@ -32,7 +32,12 @@ from app.checks.config_schemas import CONFIG_SCHEMAS_BY_TYPE
 from app.config import settings
 from app.ingest.ddl_parser import ParsedRepo, parse_repo
 from app.ingest import github
-from app.ingest.heuristic import CheckProposal, propose_checks, propose_databases
+from app.ingest.heuristic import (
+    CheckProposal,
+    assess_coverage,
+    propose_checks,
+    propose_databases,
+)
 from app.ingest.repo import RepoCheckout, fetch_repo
 from app.rca.llm import ClaudeCliChatModel, extract_json
 
@@ -321,6 +326,21 @@ def analyze_repository(
             f"rule-derived set only ({final['llm_error']})."
         )
 
+    # Assessed after the LLM step, not inside `heuristic`, so a check the agent
+    # contributed counts as coverage too. Assessing earlier would report gaps
+    # the finished proposal set does not actually have.
+    coverage = (
+        assess_coverage(parsed, final["proposals"])
+        if parsed
+        else {
+            "tables_total": 0,
+            "tables_expecting_parity": 0,
+            "tables_with_parity": 0,
+            "uncovered": [],
+            "summary": "Nothing was parsed, so there is nothing to report coverage over.",
+        }
+    )
+
     return {
         "repo_url": checkout["url"] if checkout else repo_url,
         "repo_ref": checkout["ref"] if checkout else None,
@@ -331,6 +351,7 @@ def analyze_repository(
         "project_description": final["project_description"],
         "databases": final["databases"],
         "checks": final["proposals"],
+        "coverage": coverage,
         "sql_files": parsed["files"] if parsed else [],
         "table_count": len(parsed["tables"]) if parsed else 0,
         "llm_error": final["llm_error"],

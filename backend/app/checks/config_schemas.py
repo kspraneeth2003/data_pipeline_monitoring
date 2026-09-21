@@ -51,8 +51,29 @@ class ParityColumn(BaseModel):
 
 
 class BronzeToSilverParityConfig(BaseModel):
+    """Key-and-value parity between two layers of a pipeline.
+
+    Named for the bronze -> silver case it was written for, but the comparison
+    is layer-agnostic: silver -> gold states its key and column mapping in a
+    MERGE exactly the same way, and the only thing bronze-specific here is that
+    one side may be untyped VARIANT, which `ParityColumn` already handles by
+    carrying an explicit expression per side.
+    """
+
     bronzeObject: str
     silverObject: str
+
+    # A predicate the MERGE applies to the source, lifted from its WHERE clause
+    # and applied to the source side here so both sides describe the same
+    # population. Without it a filtered MERGE cannot be checked at all: the
+    # target is *supposed* to hold fewer rows, so unfiltered parity fails
+    # forever on correct data and the check gets muted.
+    #
+    # This is a fragment of SQL from the DDL, not user input, and it is
+    # interpolated into the generated statement. Anything reaching this field
+    # from outside the parser must be reviewed before it is saved - which is
+    # what the ingestion review step is for.
+    sourceFilter: str | None = None
 
     # The composite key silver is expected to be unique on - normally lifted
     # straight from the MERGE's ON clause.

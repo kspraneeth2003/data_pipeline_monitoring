@@ -425,6 +425,28 @@ export function NewProject() {
             )}
           </div>
 
+          {/* Coverage sits above the proposals on purpose. A list of checks
+              reads as success on its own, including when it came from a repo
+              the parser barely understood - this is the line that tells the
+              two apart. */}
+          <div className="rounded-md border border-border bg-surface px-4 py-3 text-sm">
+            <p className="font-medium text-foreground">{analysis.coverage.summary}</p>
+            {analysis.coverage.uncovered.length > 0 && (
+              <ul className="mt-2 space-y-1.5 text-zinc-500">
+                {analysis.coverage.uncovered.map((table) => (
+                  <li key={table.table}>
+                    <span className="font-mono text-xs text-foreground">{table.table}</span>
+                    {table.gaps.map((gap) => (
+                      <span key={gap} className="block text-xs">
+                        {gap}
+                      </span>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
           {analysis.warnings.length > 0 && (
             <ul className="space-y-1 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
               {analysis.warnings.map((warning) => (

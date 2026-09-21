@@ -296,6 +296,29 @@ class ProposedDatabase(BaseModel):
     tables: list[str]
 
 
+class TableCoverageOut(BaseModel):
+    table: str
+    parity: bool
+    freshness: bool
+    schema_drift: bool
+    gaps: list[str]
+
+
+class CoverageOut(BaseModel):
+    """What the rules covered and what they could not.
+
+    Shown next to the proposal count because the two are only meaningful
+    together: "12 checks" reads as success on its own, even when it came from
+    a repo where the parser understood a fraction of the tables.
+    """
+
+    tables_total: int
+    tables_expecting_parity: int
+    tables_with_parity: int
+    uncovered: list[TableCoverageOut]
+    summary: str
+
+
 class RepoAnalysisOut(BaseModel):
     repo_url: str
     repo_ref: str | None
@@ -305,6 +328,7 @@ class RepoAnalysisOut(BaseModel):
     project_description: str
     databases: list[ProposedDatabase]
     checks: list[ProposedCheck]
+    coverage: CoverageOut
     sql_files: list[str]
     table_count: int
     llm_error: str | None

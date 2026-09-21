@@ -72,10 +72,24 @@ def _joined_key_string(aliases: list[str]) -> str:
     return f"CONCAT_WS('|', {parts})"
 
 
+def _source_filter_clause(source_filter: str | None) -> str:
+    """The MERGE's own row filter, as an extra AND on every bronze-side read.
+
+    It has to apply to `bronze_pending` as well as `bronze_all`, not just the
+    settled set: a row excluded by the filter but present in silver would
+    otherwise be counted as a key silver invented from nothing. Filtering one
+    side, or one CTE, only moves the false alarm somewhere else.
+    """
+    if not source_filter:
+        return ""
+    return f"\n    AND ({source_filter})"
+
+
 def build_parity_sql(config: BronzeToSilverParityConfig) -> str:
     key_aliases = [_key_alias(i) for i in range(len(config.keyColumns))]
     value_aliases = [_value_alias(i) for i in range(len(config.valueColumns))]
     at = _at_clause(config.asOfTimestamp)
+    source_filter = _source_filter_clause(config.sourceFilter)
 
     bronze_keys = ",\n      ".join(
         f"{col.bronze} AS {alias}" for col, alias in zip(config.keyColumns, key_aliases)
@@ -142,7 +156,7 @@ bronze_all AS (
       {bronze_keys}{bronze_values},
       {config.bronzeLoadedAtColumn} AS _LOADED_AT{bronze_seq}
   FROM {config.bronzeObject}{at}
-  WHERE {config.bronzeLoadedAtColumn} <= (SELECT CUTOFF FROM bounds)
+  WHERE {config.bronzeLoadedAtColumn} <= (SELECT CUTOFF FROM bounds){source_filter}
 ),
 bronze_latest AS (
   SELECT *, 1 AS _B_PRESENT
@@ -155,7 +169,7 @@ bronze_pending AS (
   -- without this they would read as keys silver invented out of nothing.
   SELECT DISTINCT {bronze_keys_only}, 1 AS _P_PRESENT
   FROM {config.bronzeObject}{at}
-  WHERE {config.bronzeLoadedAtColumn} > (SELECT CUTOFF FROM bounds)
+  WHERE {config.bronzeLoadedAtColumn} > (SELECT CUTOFF FROM bounds){source_filter}
 ),
 silver_all AS (
   SELECT

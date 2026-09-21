@@ -8,15 +8,21 @@ not introduce a second, harder failure mode.
 
 The guiding rule is that every proposal must be traceable to something the DDL
 actually says. A MERGE states which rows should land where and keyed on what; a
-task's SCHEDULE states how often; a CREATE TABLE states the column contract.
-Where the DDL says nothing - what null rate is acceptable, which columns matter
-most - this module proposes nothing, and leaves that to the LLM and the user.
+task's SCHEDULE states how often; a CREATE TABLE states the column contract and,
+where it says NOT NULL, the null contract too. Where the DDL says nothing - what
+*non-zero* null rate is acceptable, which columns matter most - this module
+proposes nothing, and leaves that to the LLM and the user.
+
+The second rule is that silence is not coverage. `assess_coverage` reports the
+tables this module could *not* cover and why, because a thin proposal list and a
+clean pipeline look identical otherwise, and the thin list is the one that shows
+up when the parser met a repo shape it does not understand.
 """
 
 import re
 from typing import TypedDict
 
-from app.ingest.ddl_parser import ParsedMerge, ParsedRepo, ParsedTable
+from app.ingest.ddl_parser import ParsedColumn, ParsedMerge, ParsedRepo, ParsedTable
 
 # Schema and table naming that marks a raw landing layer. A bronze->silver
 # parity check is only meaningful when the source really is untyped landed
@@ -135,21 +141,69 @@ def _mapping_concerns(merge: ParsedMerge) -> list[str]:
     return concerns
 
 
-def _b2s_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckProposal | None:
+def _settle_column(table: ParsedTable | None, landing: bool) -> str | None:
+    """The column saying when a source row became available to the MERGE.
+
+    Parity needs this to tell a row that is *late* from a row that was *lost*:
+    without it every in-flight row reads as loss and the check cries wolf on a
+    healthy pipeline.
+
+    Which column that is depends on the layer. Append-only landing tables stamp
+    a load time; a typed table that is itself maintained by a MERGE stamps an
+    update time instead, and using the wrong one silently shifts the settling
+    window onto a column that does not advance.
+    """
+    if landing:
+        return _find_column(table, LOADED_AT_COLUMNS) or _find_column(table, UPDATED_AT_COLUMNS)
+    return _find_column(table, UPDATED_AT_COLUMNS) or _find_column(table, LOADED_AT_COLUMNS)
+
+
+def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckProposal | None:
+    """Key-and-value parity for one MERGE, at whatever layer it sits.
+
+    This used to fire only when the source was a landing table, on the grounds
+    that comparing two typed tables "just restates a row-count check". That was
+    wrong, and it left every gold table checked by row count alone. A MERGE
+    states its key in the ON clause and its column mapping in the SELECT at any
+    layer; silver -> gold can lose a row or write the wrong value exactly the
+    way bronze -> silver can, and a row count sees neither.
+
+    What is genuinely bronze-specific is only that one side may be untyped
+    VARIANT - and `ParityColumn` already carries an explicit expression per
+    side to handle that, so it costs nothing when both sides are typed.
+    """
     source, target = merge["source"], merge["target"]
     if not source or not merge["key_columns"]:
         return None
 
-    bronze_table = tables.get(source)
-    loaded_at = _find_column(bronze_table, LOADED_AT_COLUMNS)
-    if not loaded_at:
-        # Without a load timestamp there is no way to tell a row that is late
-        # from a row that was lost, and every in-flight row reads as missing.
+    landing = is_landing_object(source)
+    source_table = tables.get(source)
+    settle_column = _settle_column(source_table, landing)
+    if not settle_column:
+        # No timestamp on the source means no settling window, and without one
+        # every row the MERGE has not reached yet counts as loss.
         return None
 
+    layer_phrase = "bronze -> silver" if landing else (
+        f"{_schema_of(source).lower()} -> {_schema_of(target).lower()}"
+    )
+    concerns = _mapping_concerns(merge)
+    filter_note = ""
+    if merge["filter_predicate"]:
+        filter_note = (
+            f" The MERGE only copies rows matching `{merge['filter_predicate']}`, so the same "
+            "condition is applied to the source side here."
+        )
+        concerns.append(
+            f"The source side is filtered by `{merge['filter_predicate']}`, lifted from the "
+            f"MERGE. If that condition ever stops matching what the target actually holds - "
+            f"say the filter is changed in one place and not the other - this check will "
+            f"report loss that is not real. Confirm it reads correctly."
+        )
+
     return {
-        "key": f"b2s:{source}->{target}",
-        "name": f"{_table_of(target).title().replace('_', ' ')} bronze -> silver: dedup + parity",
+        "key": f"parity:{source}->{target}",
+        "name": f"{_table_of(target).title().replace('_', ' ')} {layer_phrase}: dedup + parity",
         "description": (
             f"Every settled row in {source} should appear exactly once in {target}, "
             "with values intact."
@@ -157,6 +211,7 @@ def _b2s_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckPr
         "rationale": (
             f"Derived from the MERGE in {merge['file_path']}. The key and the column "
             f"mapping are the contract that MERGE states; this check asserts it held."
+            f"{filter_note}"
         ),
         "type": "BRONZE_TO_SILVER_PARITY",
         "schedule": "*/10 * * * *",
@@ -164,8 +219,9 @@ def _b2s_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckPr
         "config": {
             "bronzeObject": source,
             "silverObject": target,
-            "bronzeLoadedAtColumn": loaded_at,
-            "bronzeSequenceColumn": _find_column(bronze_table, SEQUENCE_COLUMNS),
+            "bronzeLoadedAtColumn": settle_column,
+            "bronzeSequenceColumn": _find_column(source_table, SEQUENCE_COLUMNS),
+            "sourceFilter": merge["filter_predicate"],
             "lagMinutes": DEFAULT_LAG_MINUTES,
             "keyColumns": [
                 {"name": k["name"], "bronze": k["source_expr"], "silver": k["target_expr"]}
@@ -177,7 +233,7 @@ def _b2s_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckPr
             ],
         },
         "source": "heuristic",
-        "concerns": _mapping_concerns(merge),
+        "concerns": concerns,
     }
 
 
@@ -269,17 +325,47 @@ def _schema_drift_proposal(table: ParsedTable) -> CheckProposal | None:
     }
 
 
+def _null_rate_proposal(table: ParsedTable, column: ParsedColumn) -> CheckProposal:
+    """A NOT NULL column is a null contract the DDL states outright.
+
+    Every other null-rate threshold is a judgement call - is 2% null on this
+    column normal? - and this module deliberately does not guess at those. Zero
+    is different: the DDL already said zero, so the check restates the contract
+    rather than inventing one.
+
+    Worth having even though the warehouse enforces the constraint on write:
+    the constraint binds what the pipeline *can* insert, and this observes what
+    the table actually holds. They come apart whenever the column is added
+    later, backfilled, or the constraint is dropped in an ALTER nobody noticed
+    - which is exactly the change this platform exists to catch.
+    """
+    return {
+        "key": f"nullrate:{table['fqn']}.{column['name']}",
+        "name": f"{_table_of(table['fqn']).title().replace('_', ' ')}: {column['name']} not null",
+        "description": f"{column['name']} in {table['fqn']} should never be null.",
+        "rationale": (
+            f"The CREATE TABLE in {table['file_path']} declares {column['name']} NOT NULL, "
+            "so any null is a contract violation rather than a threshold judgement."
+        ),
+        "type": "NULL_RATE",
+        "schedule": "*/30 * * * *",
+        "database": table["database"],
+        "config": {"object": table["fqn"], "column": column["name"], "maxNullRatio": 0},
+        "source": "heuristic",
+        "concerns": [],
+    }
+
+
 def propose_checks(parsed: ParsedRepo) -> list[CheckProposal]:
     """Generates every check the DDL justifies, in the order a reviewer reads them."""
     tables = _tables_by_fqn(parsed)
     proposals: list[CheckProposal] = []
 
     for merge in parsed["merges"]:
-        source = merge["source"]
-        if source and is_landing_object(source):
-            proposal = _b2s_proposal(merge, tables)
-        else:
-            proposal = _row_count_proposal(merge)
+        # Parity is attempted at every layer, not only from a landing table.
+        # A row count is the fallback for a MERGE parity cannot describe -
+        # no key in the ON clause, or no timestamp to settle against.
+        proposal = _parity_proposal(merge, tables) or _row_count_proposal(merge)
         if proposal:
             proposals.append(proposal)
 
@@ -293,6 +379,13 @@ def propose_checks(parsed: ParsedRepo) -> list[CheckProposal]:
         if proposal:
             proposals.append(proposal)
 
+    for table in parsed["tables"]:
+        if is_landing_object(table["fqn"]):
+            continue
+        for column in table["columns"]:
+            if not column["nullable"]:
+                proposals.append(_null_rate_proposal(table, column))
+
     # A repo can define the same object in more than one file; the first
     # proposal for a key is the one whose file the parser already preferred.
     seen: set[str] = set()
@@ -303,6 +396,151 @@ def propose_checks(parsed: ParsedRepo) -> list[CheckProposal]:
         seen.add(proposal["key"])
         unique.append(proposal)
     return unique
+
+
+class TableCoverage(TypedDict):
+    table: str
+    parity: bool
+    freshness: bool
+    schema_drift: bool
+    # Why this table has no parity check, in a sentence a reviewer can act on.
+    # Empty when it has one.
+    gaps: list[str]
+
+
+class CoverageReport(TypedDict):
+    tables_total: int
+    # Tables a parity check is *expected* for: everything but the landing
+    # layer, which is append-only with no upstream in this repo. Reporting
+    # against all tables instead would make a fully covered pipeline read as
+    # partially covered forever.
+    tables_expecting_parity: int
+    tables_with_parity: int
+    # Only the tables missing something. A reviewer reads this to decide
+    # whether the proposal set is thin because the pipeline is simple or
+    # because the parser did not understand the repo.
+    uncovered: list[TableCoverage]
+    summary: str
+
+
+def _parity_gap_reason(
+    table: ParsedTable, merges_by_target: dict[str, ParsedMerge], tables: dict[str, ParsedTable]
+) -> str:
+    """Why parity could not be derived for one table - specific, not generic.
+
+    "3 tables have no parity check" tells a reviewer nothing they can act on.
+    "PRODUCT_STOCK_SUMMARY is written by a MERGE with no ON clause the parser
+    could read" tells them whether to fix the repo, fix the parser, or write
+    the check by hand.
+    """
+    merge = merges_by_target.get(table["fqn"])
+    if merge is None:
+        return (
+            "No MERGE in the repository writes this table. It may be loaded by a COPY, a "
+            "view, or a tool outside this repo - parity needs a stated source to compare "
+            "against, so this one has to be written by hand."
+        )
+    if not merge["source"]:
+        return (
+            f"The MERGE in {merge['file_path']} does not name a single source table the "
+            "parser could resolve (a join or a subquery, most likely), so there is no one "
+            "object to compare against."
+        )
+    if not merge["key_columns"]:
+        return (
+            f"The MERGE in {merge['file_path']} has no ON condition the parser could read as "
+            "a key. Parity is keyed comparison, so without a key it falls back to row count."
+        )
+    source_table = tables.get(merge["source"])
+    if source_table is None:
+        return (
+            f"The MERGE reads {merge['source']}, which is not defined by any CREATE TABLE in "
+            "this repository - so its columns, and any load timestamp, are unknown here."
+        )
+    return (
+        f"{merge['source']} has no load or update timestamp column, so there is no way to "
+        "tell a row still in flight from a row that was lost. Every in-flight row would "
+        "read as loss."
+    )
+
+
+def assess_coverage(parsed: ParsedRepo, proposals: list[CheckProposal]) -> CoverageReport:
+    """What the rules covered, and what they could not.
+
+    Ingestion's failure mode is quiet: a repo the parser does not understand
+    yields a short proposal list, and a short list is indistinguishable from a
+    simple pipeline. This makes the difference explicit, so "12 checks" is
+    read alongside "and 4 tables no rule could cover, for these reasons."
+    """
+    tables = _tables_by_fqn(parsed)
+    merges_by_target = {m["target"]: m for m in parsed["merges"]}
+
+    covered: dict[str, set[str]] = {}
+    for proposal in proposals:
+        config = proposal["config"]
+        # A parity check covers its target; every other type covers the single
+        # object it names.
+        objects = (
+            [config.get("silverObject")]
+            if proposal["type"] == "BRONZE_TO_SILVER_PARITY"
+            else [config.get("object"), config.get("comparisonObject")]
+        )
+        for fqn in objects:
+            if isinstance(fqn, str):
+                covered.setdefault(fqn, set()).add(proposal["type"])
+
+    uncovered: list[TableCoverage] = []
+    with_parity = 0
+    expecting = 0
+    for table in parsed["tables"]:
+        # A landing table is append-only with no upstream in this repo, so it
+        # is not expected to have parity and is not counted as a gap.
+        if is_landing_object(table["fqn"]):
+            continue
+        expecting += 1
+
+        types = covered.get(table["fqn"], set())
+        if "BRONZE_TO_SILVER_PARITY" in types:
+            with_parity += 1
+            continue
+
+        uncovered.append(
+            {
+                "table": table["fqn"],
+                "parity": False,
+                "freshness": "FRESHNESS" in types,
+                "schema_drift": "SCHEMA_DRIFT" in types,
+                "gaps": [_parity_gap_reason(table, merges_by_target, tables)],
+            }
+        )
+
+    total = len(parsed["tables"])
+    landing = total - expecting
+    if not expecting:
+        summary = (
+            f"No table in this repository is expected to have a parity check "
+            f"({total} parsed, all of them landing tables). That usually means the "
+            "repo defines the raw layer only, or the parser did not recognise its shape."
+        )
+    elif not uncovered:
+        summary = (
+            f"Every table that should have a parity check has one "
+            f"({with_parity} of {expecting}; {landing} landing table(s) exempt)."
+        )
+    else:
+        summary = (
+            f"{with_parity} of {expecting} tables have a parity check. "
+            f"{len(uncovered)} could not be covered by rule and need a decision - "
+            "see the reason on each."
+        )
+
+    return {
+        "tables_total": total,
+        "tables_expecting_parity": expecting,
+        "tables_with_parity": with_parity,
+        "uncovered": uncovered,
+        "summary": summary,
+    }
 
 
 def propose_databases(parsed: ParsedRepo) -> list[dict]:

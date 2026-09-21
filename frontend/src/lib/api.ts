@@ -122,6 +122,22 @@ export type ProposedDatabase = {
   tables: string[];
 };
 
+export type TableCoverage = {
+  table: string;
+  parity: boolean;
+  freshness: boolean;
+  schema_drift: boolean;
+  gaps: string[];
+};
+
+export type Coverage = {
+  tables_total: number;
+  tables_expecting_parity: number;
+  tables_with_parity: number;
+  uncovered: TableCoverage[];
+  summary: string;
+};
+
 export type RepoAnalysis = {
   repo_url: string;
   repo_ref: string | null;
@@ -131,6 +147,7 @@ export type RepoAnalysis = {
   project_description: string;
   databases: ProposedDatabase[];
   checks: ProposedCheck[];
+  coverage: Coverage;
   sql_files: string[];
   table_count: number;
   llm_error: string | null;

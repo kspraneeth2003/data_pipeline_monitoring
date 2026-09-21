@@ -149,6 +149,22 @@ def create_project_from_analysis(
                 type=proposed["type"],
                 schedule=proposed["schedule"],
                 config=proposed["config"],
+                # Provenance, recorded at the moment the check is created
+                # because it cannot be reconstructed later. It is what lets
+                # the maintenance agent know this check is its own to update
+                # when the DDL moves - and, just as importantly, what marks
+                # every *other* check as one it must not touch.
+                origin=(
+                    models.CheckOrigin.AGENT.value
+                    if proposed.get("source") == "llm"
+                    else models.CheckOrigin.DERIVED.value
+                ),
+                derived_from={
+                    "key": proposed["key"],
+                    "rationale": proposed["rationale"],
+                    "source": proposed.get("source"),
+                },
+                derived_at_commit=analysis.get("repo_commit"),
             )
         )
 

@@ -154,6 +154,84 @@ export type RepoAnalysis = {
   warnings: string[];
 };
 
+export type IncidentEvent = {
+  id: string;
+  kind: "OPENED" | "COMMENT" | "ESCALATED" | "REOPENED" | "CLEARED" | "SUPPRESSED";
+  body: string;
+  author: string;
+  check_run_id: string | null;
+  created_at: string;
+};
+
+export type Incident = {
+  id: string;
+  check_id: string;
+  check_name: string;
+  check_type: string;
+  database_name: string | null;
+  state: "OPEN" | "WARNING" | "CLEARED" | "SUPPRESSED";
+  severity: string;
+  title: string;
+  summary: string | null;
+  opened_at: string;
+  last_seen_at: string;
+  cleared_at: string | null;
+  failure_count: number;
+  escalation_count: number;
+  correlation_id: string | null;
+  triage_source: string;
+  ticket: Ticket | null;
+  event_count: number;
+};
+
+export type IncidentDetail = Incident & { events: IncidentEvent[] };
+
+export type CheckRevision = {
+  id: string;
+  check_id: string | null;
+  check_name: string | null;
+  database_name: string;
+  kind: "CREATE" | "UPDATE" | "RETIRE";
+  status: "PENDING" | "APPLIED" | "REJECTED" | "AUTO_APPLIED";
+  current_config: Record<string, unknown> | null;
+  proposed_name: string | null;
+  proposed_type: string | null;
+  proposed_schedule: string | null;
+  proposed_config: Record<string, unknown> | null;
+  reason: string;
+  confidence: number | null;
+  triggered_by_commit: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+};
+
+export type MonitorStatus = {
+  agent_enabled: boolean;
+  agent_model: string | null;
+  ticket_backend: string;
+  monitor_interval_seconds: number;
+  maintenance_interval_seconds: number;
+  incident_counts: Record<string, number>;
+  pending_revisions: number;
+};
+
+export type SweepResult = {
+  reopened: number;
+  escalated: number;
+  agent_actions: number;
+  agent_error: string | null;
+};
+
+export type MaintenanceResult = {
+  project: string;
+  changed: boolean;
+  revisions: number;
+  auto_applied: number;
+  undocumented_ddl: number;
+  errors: string[];
+  agent_error: string | null;
+};
+
 export type GitHubRepository = {
   full_name: string;
   clone_url: string;
@@ -287,4 +365,18 @@ export const api = {
   listTickets: () => request<TicketWithContext[]>("/api/tickets"),
   updateTicket: (id: string, payload: Record<string, unknown>) =>
     request<Ticket>(`/api/tickets/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  getMonitorStatus: () => request<MonitorStatus>("/api/monitor/status"),
+  runSweep: () => request<SweepResult>("/api/monitor/sweep", { method: "POST" }),
+  listIncidents: (slug: string, state?: string) =>
+    request<Incident[]>(`/api/projects/${slug}/incidents${state ? `?state=${state}` : ""}`),
+  getIncident: (id: string) => request<IncidentDetail>(`/api/incidents/${id}`),
+
+  listRevisions: (slug: string, status?: string) =>
+    request<CheckRevision[]>(`/api/projects/${slug}/revisions${status ? `?status=${status}` : ""}`),
+  runMaintenance: (slug: string) =>
+    request<MaintenanceResult>(`/api/projects/${slug}/maintenance`, { method: "POST" }),
+  applyRevision: (id: string) =>
+    request<CheckRevision>(`/api/revisions/${id}/apply`, { method: "POST" }),
+  rejectRevision: (id: string) =>
+    request<CheckRevision>(`/api/revisions/${id}/reject`, { method: "POST" }),
 };

@@ -4,6 +4,8 @@ import { Projects } from "./pages/Projects";
 import { NewProject } from "./pages/NewProject";
 import { NewProjectManual } from "./pages/NewProjectManual";
 import { ProjectOverview } from "./pages/ProjectOverview";
+import { ProjectIncidents } from "./pages/ProjectIncidents";
+import { ProjectRevisions } from "./pages/ProjectRevisions";
 import { ProjectTickets } from "./pages/ProjectTickets";
 import { ProjectSettings } from "./pages/ProjectSettings";
 import { NewDatabase } from "./pages/NewDatabase";
@@ -32,6 +34,8 @@ export default function App() {
         <Route path="/projects/new/manual" element={<NewProjectManual />} />
         <Route path="/projects/:slug" element={<ProjectOverview />} />
         <Route path="/projects/:slug/tickets" element={<ProjectTickets />} />
+        <Route path="/projects/:slug/incidents" element={<ProjectIncidents />} />
+        <Route path="/projects/:slug/changes" element={<ProjectRevisions />} />
         <Route path="/projects/:slug/settings" element={<ProjectSettings />} />
         <Route path="/projects/:slug/connections" element={<ProjectConnections />} />
 

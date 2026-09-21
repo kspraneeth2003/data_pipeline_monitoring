@@ -7,6 +7,7 @@ from app import models, schemas
 from app.checks.config_schemas import CONFIG_SCHEMAS_BY_TYPE
 from app.checks.runner import execute_check
 from app.db import get_db
+from app.monitoring.incidents import utcnow
 from app.models import cuid
 
 router = APIRouter(prefix="/api/checks", tags=["checks"])
@@ -96,6 +97,12 @@ def update_check(check_id: str, payload: schemas.CheckUpdate, db: Session = Depe
         value = getattr(payload, field)
         if value is not None:
             setattr(check, field, value)
+
+    # A person has now expressed intent about this check, so the maintenance
+    # agent may no longer rewrite it without review. Stamped on any edit
+    # rather than only on a config change: renaming a check or moving its
+    # schedule is still someone deciding it should be this way.
+    check.human_edited_at = utcnow()
 
     db.commit()
     return _query_with_relations(db).filter(models.Check.id == check_id).first()

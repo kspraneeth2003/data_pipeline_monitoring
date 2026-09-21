@@ -50,6 +50,21 @@ export function ProjectOverview() {
           <HealthPill health={project.health} />
         </div>
         {project.description && <p className="mt-1 max-w-2xl text-sm text-zinc-500">{project.description}</p>}
+
+        {/* The two agents' output. Incidents is where the monitor reports;
+            Proposed changes is where the maintenance agent does. Both are
+            per-project because that is the level a person owns. */}
+        <nav className="mt-3 flex flex-wrap gap-4 text-sm">
+          <Link to={`/projects/${slug}/incidents`} className="text-accent hover:underline">
+            Incidents
+          </Link>
+          <Link to={`/projects/${slug}/changes`} className="text-accent hover:underline">
+            Proposed changes
+          </Link>
+          <Link to={`/projects/${slug}/tickets`} className="text-accent hover:underline">
+            Tickets
+          </Link>
+        </nav>
       </header>
 
       <div className="mb-8 grid gap-4 sm:grid-cols-4">

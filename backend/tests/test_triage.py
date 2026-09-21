@@ -230,3 +230,35 @@ class TestSeverity:
         for _ in range(10):
             fail(db, check)
         assert db.query(Incident).one().severity == TicketPriority.HIGH.value
+
+
+class TestSweepScale:
+    def test_escalation_is_capped_per_sweep(self, db, check, monkeypatch):
+        # The first sweep over an existing backlog would otherwise escalate
+        # everything at once - 189 incidents on the real database, and with
+        # a tracker attached that many API calls in one tick.
+        monkeypatch.setattr("app.config.settings.max_escalations_per_sweep", 3)
+        old = lifecycle.utcnow() - timedelta(days=3)
+        for i in range(8):
+            incident = fail(db, check, f"boom {i}")
+            incident.state = IncidentState.CLEARED.value  # free the check for the next one
+            incident.opened_at = old + timedelta(minutes=i)
+            db.commit()
+        for incident in db.query(Incident).all():
+            incident.state = IncidentState.OPEN.value
+        db.commit()
+
+        assert len(triage.escalate_stale(db)) == 3
+
+    def test_the_cap_defers_the_least_neglected(self, db, check, monkeypatch):
+        monkeypatch.setattr("app.config.settings.max_escalations_per_sweep", 1)
+        older = fail(db, check, "older")
+        older.opened_at = lifecycle.utcnow() - timedelta(days=5)
+        older.state = IncidentState.CLEARED.value
+        db.commit()
+        newer = fail(db, check, "newer")
+        newer.opened_at = lifecycle.utcnow() - timedelta(days=2)
+        older.state = IncidentState.OPEN.value
+        db.commit()
+
+        assert [i.id for i in triage.escalate_stale(db)] == [older.id]

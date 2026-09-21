@@ -205,14 +205,25 @@ def escalate_stale(db: Session) -> list[Incident]:
     backoff_before = now - timedelta(hours=settings.escalation_backoff_hours)
 
     candidates = db.scalars(
-        select(Incident).where(
+        select(Incident)
+        .where(
             Incident.state == IncidentState.OPEN.value,
             Incident.opened_at <= stale_before,
         )
+        # Oldest first, so the cap below defers the least-neglected rather
+        # than whichever happened to be scanned last.
+        .order_by(Incident.opened_at)
     ).all()
 
     escalated: list[Incident] = []
     for incident in candidates:
+        if len(escalated) >= settings.max_escalations_per_sweep:
+            logger.info(
+                "Escalation cap reached (%d); %d more will wait for the next sweep",
+                settings.max_escalations_per_sweep,
+                len(candidates) - len(escalated),
+            )
+            break
         if incident.last_escalated_at and incident.last_escalated_at > backoff_before:
             continue
         ticket = incident.ticket

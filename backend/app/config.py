@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # ...and not again for at least this long, so escalation does not become
     # a daily nag that gets filtered out.
     escalation_backoff_hours: float = 24.0
+    # Most escalations one sweep may issue, oldest first. Without a cap the
+    # first sweep over an existing backlog escalates everything at once -
+    # observed at 189 on the local database - which is both unreadable and,
+    # with a real tracker attached, several hundred API calls in one tick.
+    # The rest are not lost, only deferred to the next sweep.
+    max_escalations_per_sweep: int = 10
 
     # --- Jira ---------------------------------------------------------
     #

@@ -23,3 +23,14 @@ dependencies = [
     "sqlalchemy>=2.0.52",
     "uvicorn[standard]>=0.52.4",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+# The backend is a flat `app` package rooted here, not an installed
+# distribution, so the rootdir has to be on sys.path for `import app` to work.
+pythonpath = ["."]
+testpaths = ["tests"]

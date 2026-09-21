@@ -25,6 +25,10 @@ from typing import TypedDict
 class ParsedColumn(TypedDict):
     name: str
     data_type: str
+    # False only when the DDL says NOT NULL. A nullable column is the default
+    # in Snowflake, so absence of the constraint is not evidence of intent -
+    # which is why only `nullable: False` justifies a generated null-rate check.
+    nullable: bool
 
 
 class ParsedTable(TypedDict):
@@ -49,6 +53,12 @@ class ParsedMerge(TypedDict):
     key_columns: list[ColumnMapping]
     value_columns: list[ColumnMapping]
     filtered: bool
+    # The business predicate that makes `filtered` true, with source-table
+    # aliases stripped so it can be re-applied to the source table directly.
+    # None when the MERGE copies every row. Carrying the text - not just the
+    # boolean - is what lets a filtered MERGE get a parity check at all: apply
+    # the same predicate to both sides and the two are comparable again.
+    filter_predicate: str | None
     file_path: str
 
 
@@ -78,6 +88,16 @@ _TYPE_STOPWORDS = re.compile(
 
 _TABLE_CONSTRAINT = re.compile(
     r"^\s*(?:CONSTRAINT|PRIMARY\s+KEY|UNIQUE|FOREIGN\s+KEY|CHECK)\b", re.IGNORECASE
+)
+
+# `NOT NULL` on a column definition. Deliberately not `_TYPE_STOPWORDS`, which
+# also matches a bare `NULL` - the two mean opposite things.
+_NOT_NULL = re.compile(r"\bNOT\s+NULL\b", re.IGNORECASE)
+
+# What ends a WHERE clause. Without this the predicate grab runs to the end of
+# the SELECT and swallows `GROUP BY ...` into the filter text.
+_TRAILING_CLAUSE = re.compile(
+    r"\b(?:GROUP\s+BY|HAVING|QUALIFY|WINDOW|ORDER\s+BY|LIMIT|FETCH|OFFSET)\b", re.IGNORECASE
 )
 
 
@@ -160,7 +180,13 @@ def _parse_columns(body: str) -> list[ParsedColumn]:
         data_type = (rest[: stop.start()] if stop else rest).strip().rstrip(",").strip()
         if not data_type:
             continue
-        columns.append({"name": name, "data_type": data_type.upper()})
+        columns.append(
+            {
+                "name": name,
+                "data_type": data_type.upper(),
+                "nullable": not _NOT_NULL.search(rest),
+            }
+        )
     return columns
 
 
@@ -201,7 +227,11 @@ def parse_tables(sql: str, file_path: str) -> list[ParsedTable]:
                 "name": parts[2],
                 "fqn": fqn,
                 "columns": [
-                    {"name": c["name"], "data_type": base_type(c["data_type"])}
+                    {
+                        "name": c["name"],
+                        "data_type": base_type(c["data_type"]),
+                        "nullable": c["nullable"],
+                    }
                     for c in _parse_columns(body)
                 ],
                 "comment": comment,
@@ -302,24 +332,61 @@ def parse_streams(sql: str) -> dict[str, str]:
     return streams
 
 
-def _has_row_filter(using_body: str) -> bool:
-    """True if the MERGE drops rows on its way from source to target.
+def _strip_source_aliases(predicate: str) -> str:
+    """`src.QUANTITY_ON_HAND > 0` -> `QUANTITY_ON_HAND > 0`.
+
+    The predicate is lifted out of a MERGE, where the source carries an alias,
+    and re-applied to the source table selected directly with no alias. A
+    one-level `alias.` prefix is dropped; a qualified object name is not, which
+    is why the prefix must be neither preceded by a dot nor followed by one -
+    that leaves `DPM_SRC_CRM.BRONZE.CUSTOMERS_RAW` intact.
+    """
+    return re.sub(rf"(?<![.\w]){IDENT}\s*\.\s*(?={IDENT}(?!\s*\.))", "", predicate)
+
+
+def _row_filter(using_body: str) -> str | None:
+    """The business predicate the MERGE applies, or None if it copies every row.
 
     A row-count parity check is only honest when the MERGE copies every row.
     `WHERE QUANTITY_ON_HAND > 0` means target is *supposed* to be smaller than
-    source, and a generated parity check would fail forever on correct data -
+    source, so comparing the two unfiltered would fail forever on correct data -
     the fastest way to teach someone to ignore this tool.
 
-    `METADATA$ACTION = 'INSERT'` is excluded: that is stream mechanics, not a
-    business filter, and it drops nothing that was ever meant to land.
+    Returning the text rather than a boolean is what lets such a MERGE be
+    checked at all: the same predicate applied to the source side makes the two
+    comparable again, and the alternative - proposing nothing - leaves every
+    filtered table silently uncovered.
+
+    Two kinds of condition are dropped, because neither shrinks the target:
+
+    * `METADATA$ACTION = 'INSERT'` is stream mechanics, and drops nothing that
+      was ever meant to land.
+    * A condition containing a subquery - `CUSTOMER_ID IN (SELECT ... FROM
+      changed_ids)` - is an *incremental* restriction saying which rows this
+      run touches, not which rows belong in the target. The target still
+      accumulates every row over time, so full parity is the correct assertion.
+      It is also unusable as a source-side predicate, since the CTE it names
+      exists only inside the MERGE.
+
+    If every condition is dropped the MERGE is unfiltered after all, which is
+    the difference between a gold table getting real parity and getting nothing.
     """
     where = re.search(r"\bWHERE\b(.*)$", using_body, re.IGNORECASE | re.DOTALL)
     if not where:
-        return False
-    conditions = re.split(r"\bAND\b", where.group(1), flags=re.IGNORECASE)
-    return any(
-        condition.strip() and "METADATA$" not in condition.upper() for condition in conditions
-    )
+        return None
+    body = _TRAILING_CLAUSE.split(where.group(1))[0]
+    conditions = [
+        condition.strip()
+        for condition in re.split(r"\bAND\b", body, flags=re.IGNORECASE)
+        if condition.strip()
+        and "METADATA$" not in condition.upper()
+        and not re.search(r"\bSELECT\b", condition, re.IGNORECASE)
+    ]
+    if not conditions:
+        return None
+    # Each condition is re-parenthesised so an OR inside one cannot capture the
+    # neighbouring terms once they are re-joined with AND.
+    return _strip_source_aliases(" AND ".join(f"({c})" for c in conditions)).strip()
 
 
 def parse_merges(sql: str, file_path: str) -> list[ParsedMerge]:
@@ -366,13 +433,15 @@ def parse_merges(sql: str, file_path: str) -> list[ParsedMerge]:
             if name not in key_names
         ]
 
+        filter_predicate = _row_filter(using_body)
         merges.append(
             {
                 "target": normalize_fqn(match.group(1)),
                 "source": _first_from_object(using_body),
                 "key_columns": key_columns,
                 "value_columns": value_columns,
-                "filtered": _has_row_filter(using_body),
+                "filtered": filter_predicate is not None,
+                "filter_predicate": filter_predicate,
                 "file_path": file_path,
             }
         )

@@ -247,6 +247,9 @@ class Check(Base):
     incidents: Mapped[list["Incident"]] = relationship(
         back_populates="check", cascade="all, delete-orphan"
     )
+    revisions: Mapped[list["CheckRevision"]] = relationship(
+        back_populates="check", cascade="all, delete-orphan"
+    )
 
     @property
     def agent_may_rewrite(self) -> bool:
@@ -289,6 +292,71 @@ class RcaResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     check_run: Mapped["CheckRun"] = relationship(back_populates="rca")
+
+
+class RevisionKind(str, enum.Enum):
+    CREATE = "CREATE"
+    UPDATE = "UPDATE"
+    RETIRE = "RETIRE"
+
+
+class RevisionStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    APPLIED = "APPLIED"
+    REJECTED = "REJECTED"
+    # Applied by the agent without review, which it may do only for a check
+    # it authored and nobody has since edited.
+    AUTO_APPLIED = "AUTO_APPLIED"
+
+
+class CheckRevision(Base):
+    """A proposed change to a check, because the pipeline's definition moved.
+
+    The maintenance agent writes these; it does not edit checks directly.
+    That is the whole safety model: the agent's output is a diff a person can
+    read, and only a check the agent itself derived - and that nobody has
+    since edited by hand - is applied without someone looking.
+
+    Kept even after review. A rejected revision is the record that somebody
+    considered this change and decided against it, which is what stops the
+    agent proposing the same thing every time the detector fires.
+    """
+
+    __tablename__ = "check_revisions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
+    # Null for a CREATE: there is no check yet.
+    check_id: Mapped[str | None] = mapped_column(
+        ForeignKey("checks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    database_id: Mapped[str] = mapped_column(
+        ForeignKey("databases.id", ondelete="CASCADE"), index=True
+    )
+
+    kind: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(
+        String, default=RevisionStatus.PENDING.value, index=True
+    )
+
+    # The check as it stands, so the diff survives a later edit to the check
+    # itself and a reviewer sees what the agent actually compared against.
+    current_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    proposed_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    proposed_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    proposed_schedule: Mapped[str | None] = mapped_column(String, nullable=True)
+    proposed_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Why, in the agent's words, and what triggered it.
+    reason: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    detected_change: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    triggered_by_commit: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    check: Mapped["Check | None"] = relationship(back_populates="revisions")
+    database: Mapped["Database"] = relationship()
 
 
 class Incident(Base):

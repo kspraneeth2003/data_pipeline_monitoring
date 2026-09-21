@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 24
     agent_timeout_seconds: int = 120
 
+    # How often to check whether any project's DDL has moved. Slower than
+    # the monitor sweep because it costs a git fetch and a warehouse query
+    # per project, and a pipeline definition changes on the order of days.
+    maintenance_interval_seconds: int = 900
+    # Reading warehouse DDL history needs a live connection per project. Off
+    # by default so a fresh install does not open warehouse connections on a
+    # timer before anyone has asked it to.
+    maintenance_scan_warehouse: bool = False
+
     # How often the reporting agent sweeps for incidents needing attention.
     # Every run already wakes the sweep through the scheduler; this is the
     # floor on how often the *agent* is consulted, so a burst of failures

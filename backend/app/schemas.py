@@ -387,3 +387,142 @@ class GitHubStatusOut(BaseModel):
     install_url: str | None
     installations: list[dict[str, Any]]
     error: str | None = None
+
+
+# --- Monitoring and maintenance ---------------------------------------
+
+
+class IncidentEventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    kind: str
+    body: str
+    author: str
+    check_run_id: str | None
+    created_at: datetime
+
+
+class IncidentOut(BaseModel):
+    id: str
+    check_id: str
+    check_name: str
+    check_type: str
+    database_name: str | None
+    state: str
+    severity: str
+    title: str
+    summary: str | None
+    opened_at: datetime
+    last_seen_at: datetime
+    cleared_at: datetime | None
+    failure_count: int
+    escalation_count: int
+    correlation_id: str | None
+    triage_source: str
+    ticket: TicketOut | None
+    event_count: int
+
+    @classmethod
+    def from_model(cls, incident) -> "IncidentOut":
+        return cls(
+            id=incident.id,
+            check_id=incident.check_id,
+            check_name=incident.check.name,
+            check_type=incident.check.type,
+            database_name=incident.check.database.name if incident.check.database else None,
+            state=incident.state,
+            severity=incident.severity,
+            title=incident.title,
+            summary=incident.summary,
+            opened_at=incident.opened_at,
+            last_seen_at=incident.last_seen_at,
+            cleared_at=incident.cleared_at,
+            failure_count=incident.failure_count,
+            escalation_count=incident.escalation_count,
+            correlation_id=incident.correlation_id,
+            triage_source=incident.triage_source,
+            ticket=TicketOut.model_validate(incident.ticket) if incident.ticket else None,
+            event_count=len(incident.events),
+        )
+
+
+class IncidentDetailOut(IncidentOut):
+    events: list[IncidentEventOut]
+
+    @classmethod
+    def from_model(cls, incident) -> "IncidentDetailOut":
+        base = IncidentOut.from_model(incident)
+        return cls(
+            **base.model_dump(),
+            events=[IncidentEventOut.model_validate(e) for e in incident.events],
+        )
+
+
+class RevisionOut(BaseModel):
+    id: str
+    check_id: str | None
+    check_name: str | None
+    database_name: str
+    kind: str
+    status: str
+    current_config: dict[str, Any] | None
+    proposed_name: str | None
+    proposed_type: str | None
+    proposed_schedule: str | None
+    proposed_config: dict[str, Any] | None
+    reason: str
+    confidence: float | None
+    triggered_by_commit: str | None
+    created_at: datetime
+    reviewed_at: datetime | None
+
+    @classmethod
+    def from_model(cls, revision) -> "RevisionOut":
+        return cls(
+            id=revision.id,
+            check_id=revision.check_id,
+            check_name=revision.check.name if revision.check else None,
+            database_name=revision.database.name,
+            kind=revision.kind,
+            status=revision.status,
+            current_config=revision.current_config,
+            proposed_name=revision.proposed_name,
+            proposed_type=revision.proposed_type,
+            proposed_schedule=revision.proposed_schedule,
+            proposed_config=revision.proposed_config,
+            reason=revision.reason,
+            confidence=revision.confidence,
+            triggered_by_commit=revision.triggered_by_commit,
+            created_at=revision.created_at,
+            reviewed_at=revision.reviewed_at,
+        )
+
+
+class MonitorStatusOut(BaseModel):
+    agent_enabled: bool
+    # The model string, so a set-but-unusable model is distinguishable from
+    # no model at all - they look identical from everywhere else.
+    agent_model: str | None
+    ticket_backend: str
+    monitor_interval_seconds: int
+    maintenance_interval_seconds: int
+    incident_counts: dict[str, int]
+    pending_revisions: int
+
+
+class SweepResultOut(BaseModel):
+    reopened: int
+    escalated: int
+    agent_actions: int
+    agent_error: str | None
+
+
+class MaintenanceResultOut(BaseModel):
+    project: str
+    changed: bool = False
+    revisions: int = 0
+    auto_applied: int = 0
+    undocumented_ddl: int = 0
+    errors: list[str] = []
+    agent_error: str | None = None

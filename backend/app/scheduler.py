@@ -7,6 +7,7 @@ from app import models
 from app.checks.runner import execute_check
 from app.config import settings
 from app.db import SessionLocal
+from app.maintenance.service import maintenance_job
 from app.monitoring.sweep import sweep_job
 
 logger = logging.getLogger("dpm.scheduler")
@@ -66,6 +67,16 @@ def start_scheduler() -> None:
         id="monitor_sweep",
         # A slow sweep must not stack up behind itself; one late pass is
         # recoverable, two concurrent ones double-comment every incident.
+        max_instances=1,
+        coalesce=True,
+    )
+    # Pipeline definitions change on the order of days, so this runs far
+    # less often than the monitor - it costs a git fetch per project.
+    scheduler.add_job(
+        maintenance_job,
+        "interval",
+        seconds=settings.maintenance_interval_seconds,
+        id="maintenance_scan",
         max_instances=1,
         coalesce=True,
     )

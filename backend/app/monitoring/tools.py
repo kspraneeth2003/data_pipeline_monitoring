@@ -80,8 +80,19 @@ def _incident_summary(incident: Incident) -> dict:
     }
 
 
-def build_tools(db: Session) -> list[BaseTool]:
-    """Tools bound to one session, for one sweep."""
+def build_tools(db: Session, investigated: set[str] | None = None) -> list[BaseTool]:
+    """Tools bound to one session, for one sweep.
+
+    `investigated`, when given, collects every incident id the agent
+    actually looked up. The caller uses it to refuse write actions on
+    incidents the agent never read - see `agent.review_incidents`. It is
+    recorded here rather than inferred later because this is the only place
+    that knows what was really asked for.
+    """
+    seen = investigated if investigated is not None else set()
+
+    def note(incident_id: str) -> None:
+        seen.add(incident_id)
 
     @tool
     def get_incident(incident_id: str) -> str:
@@ -91,6 +102,7 @@ def build_tools(db: Session) -> list[BaseTool]:
         Read this before commenting on an incident. The existing comments are
         what tell you whether something has already been said - repeating it
         is how a ticket becomes noise."""
+        note(incident_id)
         incident = db.get(Incident, incident_id)
         if incident is None:
             return json.dumps({"error": f"No incident {incident_id}"})
@@ -114,6 +126,7 @@ def build_tools(db: Session) -> list[BaseTool]:
         This is how you tell a steady failure from one that is getting worse,
         and a real recurrence from a check that flaps between pass and fail.
         Compare the metrics across runs rather than reading only the latest."""
+        note(incident_id)
         incident = db.get(Incident, incident_id)
         if incident is None:
             return json.dumps({"error": f"No incident {incident_id}"})
@@ -149,6 +162,7 @@ def build_tools(db: Session) -> list[BaseTool]:
         a suspended task or a bad deploy takes out every check over the
         objects it touched, within minutes of each other. Incidents that are
         already grouped share a correlation_id."""
+        note(incident_id)
         incident = db.get(Incident, incident_id)
         if incident is None:
             return json.dumps({"error": f"No incident {incident_id}"})
@@ -193,6 +207,7 @@ def build_tools(db: Session) -> list[BaseTool]:
         Prefer citing this over speculating. A low confidence score means the
         evidence was thin, and should be reported as thin rather than
         restated as fact."""
+        note(incident_id)
         incident = db.get(Incident, incident_id)
         if incident is None or not incident.first_run_id:
             return json.dumps({"error": "No analysis available"})
@@ -222,6 +237,7 @@ def build_tools(db: Session) -> list[BaseTool]:
 
         A check that opens and clears repeatedly is noisy, and saying so is
         more useful than reporting its next failure as news."""
+        note(incident_id)
         incident = db.get(Incident, incident_id)
         if incident is None:
             return json.dumps({"error": f"No incident {incident_id}"})

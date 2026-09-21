@@ -86,6 +86,13 @@ def add_event(
         kind=kind.value,
         body=body,
         author=author,
+        # Stamped here rather than left to the column default so every
+        # timestamp in the incident comes off one clock at one precision.
+        # The server default truncates to the second on some backends, and
+        # an event that lands in the same second as `ticket_moved_at` then
+        # sorts before it - which makes "has anything happened since the
+        # agent last spoke" answer yes forever.
+        created_at=utcnow(),
     )
     db.add(event)
     return event

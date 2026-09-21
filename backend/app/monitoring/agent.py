@@ -40,11 +40,20 @@ from app.tickets.registry import ticket_backend
 
 logger = logging.getLogger("dpm.monitoring.agent")
 
-# How many incidents to put in front of the model at once. Enough that
-# correlation is possible - the whole point of batching - and bounded so a
-# project in a bad state cannot produce a prompt that costs more than it is
-# worth. Beyond this the oldest are reviewed first; the rest wait a sweep.
-MAX_INCIDENTS_PER_SWEEP = 25
+# How many incidents to put in front of the model at once.
+#
+# This was 25, and that was a bug rather than a tuning choice. An agent
+# asked to decide on 25 incidents while its loop budget affords perhaps two
+# investigations cannot read them all - and instead of saying so, it fills
+# the gap with plausible detail. Observed on the first real sweep: a
+# confident escalation citing a metric climbing "3841 -> 5089" across seven
+# runs, a "migration 0047" and a "WMS feed merged 2026-09-15", none of which
+# exist. The real metric was 0 on every run.
+#
+# The batch now has to fit the budget. A handful keeps correlation possible
+# - incidents are still seen side by side - while leaving enough turns to
+# actually look at each one.
+MAX_INCIDENTS_PER_SWEEP = 4
 
 VALID_SEVERITIES = {p.value for p in IncidentSeverity}
 
@@ -205,13 +214,17 @@ def review_incidents(db: Session, incidents: list[Incident]) -> int:
     batch = incidents[:MAX_INCIDENTS_PER_SWEEP]
     if len(incidents) > MAX_INCIDENTS_PER_SWEEP:
         logger.info(
-            "Reviewing the %d oldest of %d active incidents this sweep",
-            MAX_INCIDENTS_PER_SWEEP,
+            "Reviewing %d of %d incidents needing attention this sweep",
+            len(batch),
             len(incidents),
         )
 
+    # Collected by the tools as the agent uses them, so "did it actually
+    # look?" is a fact rather than an assumption. See the guard below.
+    investigated: set[str] = set()
+
     agent = build_agent(
-        tools=build_tools(db),
+        tools=build_tools(db, investigated),
         system_prompt=REPORTING_SYSTEM_PROMPT,
         response_format=ReportingDecisions,
         name="dpm-reporting-agent",
@@ -228,6 +241,22 @@ def review_incidents(db: Session, incidents: list[Incident]) -> int:
             # how a bounded review turns into an unbounded one.
             logger.warning("Agent returned unknown incident %s", decision.incident_id)
             continue
+
+        # The anti-fabrication guard, and the reason the tools record what
+        # they were asked for. A decision that writes something - a comment,
+        # an escalation - is a claim about an incident, and a claim about an
+        # incident the agent never opened is invention however well it
+        # reads. This is enforced here rather than trusted to the prompt
+        # because it is checkable, and because the failure it prevents is
+        # silent: a fabricated escalation looks exactly like a good one.
+        if decision.action != "NONE" and decision.incident_id not in investigated:
+            logger.warning(
+                "Dropping %s on %s: the agent never read this incident",
+                decision.action,
+                decision.incident_id,
+            )
+            continue
+
         try:
             if apply_decision(db, incident, decision):
                 applied += 1

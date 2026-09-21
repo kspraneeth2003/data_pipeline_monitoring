@@ -241,6 +241,35 @@ recovery. And escalation skips any issue somebody has moved off an untouched sta
 or assigned - the
 signal is absence of response, not slowness.
 
+### The agent will fabricate if you let it
+
+Worth reading before tuning any of the agent knobs, because it is not
+hypothetical and it was caused by a plausible-looking configuration.
+
+The reporting agent was originally handed up to 25 incidents per sweep with
+a loop budget affording maybe two investigations. Asked to decide on all 25,
+it did not say it lacked evidence - it produced a confident escalation
+citing a metric climbing "3841 -> 5089" across seven runs, a "migration
+0047" and a "WMS feed merged 2026-09-15". None of it existed. The real
+metric was 0 on every run, and the stored RCA it claimed to quote had a
+different cause at 0.4 confidence, not 0.82.
+
+Three changes, and the third is the one that matters:
+
+1. `MAX_INCIDENTS_PER_SWEEP` is 4, not 25 - the batch has to fit the budget.
+2. `sweep.needing_review` only offers incidents where something has changed
+   since the agent last spoke. Asking about 209 unchanged incidents every
+   five minutes invites it to manufacture something to say.
+3. **The tools record which incidents were actually read, and any decision
+   that writes - a comment, an escalation - is dropped for an incident the
+   agent never opened.** A prompt instruction not to invent is unenforceable;
+   this is checkable. On the next real sweep it dropped three SUPPRESS
+   decisions on unread incidents and let through one comment whose numbers
+   matched the database exactly.
+
+The general lesson for anything added here: a fabricated escalation reads
+exactly like a good one, so the defence has to be mechanical.
+
 ### What the agents may and may not do
 
 Both propose; the applying code decides. This is enforced in Python, not only

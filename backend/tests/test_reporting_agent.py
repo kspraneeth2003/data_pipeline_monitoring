@@ -215,6 +215,13 @@ class TestBatchHandling:
             "build_agent",
             lambda **_: object(),
         )
+        # Both were "investigated", so only the unknown id is what gets
+        # this decision dropped - not the anti-fabrication guard.
+        monkeypatch.setattr(
+            agent_module,
+            "build_tools",
+            lambda _db, seen: seen.update({incident.id, "does-not-exist"}) or [],
+        )
         monkeypatch.setattr(
             agent_module,
             "invoke_agent",
@@ -228,3 +235,117 @@ class TestBatchHandling:
         # Acting on an incident nobody asked about turns a bounded review
         # into an unbounded one.
         assert agent_module.review_incidents(db, [incident]) == 1
+
+
+class TestAntiFabricationGuard:
+    """A decision about an incident the agent never opened is invention.
+
+    This is not hypothetical. On the first real sweep the agent was handed
+    25 incidents with a loop budget affording maybe two investigations, and
+    it escalated one with a confident comment citing a metric climbing
+    "3841 -> 5089" over seven runs, a "migration 0047" and a "WMS feed
+    merged 2026-09-15". None of it existed; the real metric was 0 on every
+    run. A fabricated escalation reads exactly like a good one, so the
+    defence has to be mechanical rather than a line in the prompt.
+    """
+
+    def run_agent_with(self, db, monkeypatch, incident, decisions, investigated):
+        from app.monitoring import agent as agent_module
+
+        monkeypatch.setattr(agent_module, "build_agent", lambda **_: object())
+        # Stand in for the tools having been used: the real ones record
+        # into this set as the agent calls them.
+        monkeypatch.setattr(
+            agent_module,
+            "build_tools",
+            lambda _db, seen: seen.update(investigated) or [],
+        )
+        monkeypatch.setattr(
+            agent_module,
+            "invoke_agent",
+            lambda *_a, **_k: agent_module.ReportingDecisions(decisions=decisions),
+        )
+        return agent_module.review_incidents(db, [incident])
+
+    def test_a_write_on_an_uninvestigated_incident_is_dropped(
+        self, db, incident, monkeypatch
+    ):
+        applied = self.run_agent_with(
+            db,
+            monkeypatch,
+            incident,
+            [decide(incident_id=incident.id, action="ESCALATE")],
+            investigated=set(),
+        )
+        assert applied == 0
+        assert not any(e.author == "agent" for e in incident.events)
+
+    def test_the_same_decision_is_applied_once_investigated(
+        self, db, incident, monkeypatch
+    ):
+        applied = self.run_agent_with(
+            db,
+            monkeypatch,
+            incident,
+            [decide(incident_id=incident.id, action="ESCALATE")],
+            investigated={incident.id},
+        )
+        assert applied == 1
+        assert any(e.author == "agent" for e in incident.events)
+
+    def test_none_needs_no_investigation(self, db, incident, monkeypatch):
+        # Saying nothing about an incident is not a claim about it, so it
+        # does not need evidence behind it.
+        applied = self.run_agent_with(
+            db,
+            monkeypatch,
+            incident,
+            [decide(incident_id=incident.id, action="NONE")],
+            investigated=set(),
+        )
+        assert applied == 0
+
+
+class TestReviewSelection:
+    def test_an_unreviewed_incident_is_selected(self, db, incident):
+        from app.monitoring.sweep import needing_review
+
+        assert [i.id for i in needing_review(db, [incident])] == [incident.id]
+
+    def test_an_incident_with_nothing_new_is_skipped(self, db, incident):
+        # 209 active incidents in exactly the state they were in five
+        # minutes ago is both expensive to review and an invitation to
+        # manufacture something to say.
+        from app.monitoring.incidents import add_event, utcnow
+        from app.models import IncidentEventKind
+        from app.monitoring.sweep import needing_review
+
+        incident.last_seen_at = utcnow() - timedelta(hours=2)
+        add_event(db, incident, IncidentEventKind.COMMENT, "said my piece", author="agent")
+        db.commit()
+        db.refresh(incident)
+        assert needing_review(db, [incident]) == []
+
+    def test_a_further_failure_brings_it_back(self, db, incident):
+        from app.monitoring.incidents import add_event, utcnow
+        from app.models import IncidentEventKind
+        from app.monitoring.sweep import needing_review
+
+        add_event(db, incident, IncidentEventKind.COMMENT, "said my piece", author="agent")
+        db.commit()
+        db.refresh(incident)
+        incident.last_seen_at = utcnow() + timedelta(minutes=5)
+        db.commit()
+        assert [i.id for i in needing_review(db, [incident])] == [incident.id]
+
+    def test_jira_movement_brings_it_back(self, db, incident):
+        from app.monitoring.incidents import add_event, utcnow
+        from app.models import IncidentEventKind
+        from app.monitoring.sweep import needing_review
+
+        add_event(db, incident, IncidentEventKind.COMMENT, "said my piece", author="agent")
+        db.commit()
+        db.refresh(incident)
+        incident.ticket_moved_at = utcnow() + timedelta(minutes=5)
+        db.commit()
+        assert [i.id for i in needing_review(db, [incident])] == [incident.id]

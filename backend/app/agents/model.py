@@ -43,6 +43,11 @@ class ModelUnavailable(RuntimeError):
     """
 
 
+# Selects the local Claude Code CLI instead of a hosted provider. Accepts a
+# bare "claude-cli" or "claude-cli:<model>" to pin the CLI's own model.
+CLI_PREFIX = "claude-cli"
+
+
 @lru_cache(maxsize=1)
 def agent_model() -> BaseChatModel | None:
     """The configured chat model, or None if agents are switched off.
@@ -52,9 +57,29 @@ def agent_model() -> BaseChatModel | None:
     """
     if not settings.agent_enabled:
         return None
+
+    configured = settings.agent_model.strip()
+    if configured == CLI_PREFIX or configured.startswith(f"{CLI_PREFIX}:"):
+        # Not routed through `init_chat_model`: this is a local subprocess,
+        # not a provider integration, and there is no package to install or
+        # credential to read. It still satisfies the same BaseChatModel
+        # contract, so nothing downstream can tell the difference.
+        from app.agents.claude_cli import ClaudeCliChatModel
+
+        _, _, cli_model = configured.partition(":")
+        logger.info(
+            "Agent model ready: local Claude Code CLI%s",
+            f" ({cli_model})" if cli_model else "",
+        )
+        return ClaudeCliChatModel(
+            command=settings.rca_llm_command,
+            cli_model=cli_model or None,
+            timeout_seconds=settings.agent_cli_timeout_seconds,
+        )
+
     try:
         model = init_chat_model(
-            settings.agent_model,
+            configured,
             temperature=settings.agent_temperature,
         )
     except Exception:

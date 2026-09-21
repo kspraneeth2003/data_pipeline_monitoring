@@ -83,9 +83,13 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
       jobs.py             In-memory background job registry (analysis takes ~a minute)
     rca/                  Root-cause analysis on a failed run - see below
     agents/               SHARED AGENT CORE
-      model.py            The only module that names an LLM provider. init_chat_model(AGENT_MODEL),
-                            so "openai:gpt-5" / "anthropic:claude-opus-5" / "ollama:llama3" are
+      model.py            The only module that names an LLM provider. "claude-cli" for the
+                            local CLI, anything else through init_chat_model - so
+                            "openai:gpt-5" / "anthropic:claude-opus-5" / "ollama:llama3" are
                             configuration. Returns None when unset - agents are optional
+      claude_cli.py       The local, key-free path: a BaseChatModel over `claude -p` with
+                            tool calling emulated over a JSON text protocol, so it can drive
+                            create_agent exactly as a native tool-calling model does
       runner.py           create_agent + call/tool budgets + validated structured output
     monitoring/           THE REPORTING AGENT - incidents, comments, escalation
       incidents.py        Lifecycle primitives with no judgement in them (open/clear/reopen/suppress)
@@ -260,6 +264,43 @@ Check provenance is recorded at creation (`origin`, `derived_from`,
 the API stamps `human_edited_at`. The migration marked all pre-existing checks
 `HUMAN`, which is the safe direction - it means propose, not rewrite.
 
+### Running the agents on the local Claude Code CLI
+
+`AGENT_MODEL=claude-cli` drives the `claude` binary already on the machine,
+using whatever session it is logged in with. No API key, no provider package.
+
+The obstacle was that an agent loop needs a model that emits structured tool
+calls - `create_agent` reads `AIMessage.tool_calls` to decide what to run
+next, and (via its default `ToolStrategy`) delivers the final structured
+response as a tool call too. `claude -p` returns text. So
+`agents/claude_cli.py` renders the tool catalogue into the prompt, asks for a
+single JSON object naming a tool call, and parses the reply back into a real
+`AIMessage`. LangGraph cannot tell the difference, so the agent loop, the
+middleware and the structured-output strategy all work unchanged.
+
+Two things are load-bearing and worth not "simplifying" away:
+
+**The model is told which tool ends the run.** `build_agent` passes the
+response schema's name down as `response_tool_name`, and the protocol then
+omits the free-text `final` shape entirely. Without that, the model answers
+in prose, the agent ends with no structured response, and the run is
+discarded - measured at two failures in three before the fix.
+
+**The CLI gets `--allowedTools ""`.** The tools in play are this
+application's, executed by LangGraph. A CLI that could also read files or run
+commands would be a second, ungoverned agent inside the first.
+
+What it costs: every turn is a fresh process, so a turn is tens of seconds
+and a full agent run is one to three minutes. There is no prompt caching -
+each turn re-sends the whole conversation - so cost grows with the square of
+the loop length. `AGENT_MAX_MODEL_CALLS_CLI` (default 6) is therefore tighter
+than the hosted budget. `claude --resume` would fix the re-sending, and is
+deliberately not used: the CLI's history and LangGraph's message list could
+drift apart, and a silent divergence is much harder to debug than a slow loop.
+
+Good trade for a monitor that sweeps every five minutes. Not a good trade for
+anything interactive.
+
 ### Configuring the agents
 
 `AGENT_MODEL` in `backend/.env`, and that is the whole switch:
@@ -268,6 +309,13 @@ the API stamps `human_edited_at`. The migration marked all pre-existing checks
 AGENT_MODEL=openai:gpt-5              # uv add langchain-openai,   OPENAI_API_KEY
 AGENT_MODEL=anthropic:claude-opus-5   # uv add langchain-anthropic, ANTHROPIC_API_KEY
 AGENT_MODEL=ollama:llama3             # uv add langchain-ollama
+```
+
+There is also a local option that needs no key at all:
+
+```
+AGENT_MODEL=claude-cli                # the Claude Code CLI on this machine
+AGENT_MODEL=claude-cli:sonnet         # ...pinned to a specific model
 ```
 
 `app/agents/model.py` is the only module that names a provider. Leave

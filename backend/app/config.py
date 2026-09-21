@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     agent_max_tool_calls: int = 24
     agent_timeout_seconds: int = 120
 
+    # The CLI path is far slower per turn, so it gets its own, tighter loop
+    # budget - twelve turns there is four minutes, which would overrun the
+    # sweep interval. The per-call timeout is correspondingly generous,
+    # since a single cold CLI start can take most of a minute.
+    agent_max_model_calls_cli: int = 6
+    agent_cli_timeout_seconds: int = 300
+
     # How often to check whether any project's DDL has moved. Slower than
     # the monitor sweep because it costs a git fetch and a warehouse query
     # per project, and a pipeline definition changes on the order of days.
@@ -94,6 +101,19 @@ class Settings(BaseSettings):
     @property
     def agent_enabled(self) -> bool:
         return bool(self.agent_model.strip())
+
+    @property
+    def agent_uses_cli(self) -> bool:
+        configured = self.agent_model.strip()
+        return configured == "claude-cli" or configured.startswith("claude-cli:")
+
+    @property
+    def effective_max_model_calls(self) -> int:
+        return (
+            self.agent_max_model_calls_cli
+            if self.agent_uses_cli
+            else self.agent_max_model_calls
+        )
 
     # GitHub App - lets the user grant read access to specific repositories
     # instead of pasting a URL and a personal access token. Optional: with these

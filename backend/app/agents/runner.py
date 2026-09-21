@@ -56,8 +56,18 @@ def build_agent(
     response_format: type[BaseModel],
     name: str,
 ):
+    model = require_model()
+
+    # `create_agent` delivers the structured response as a tool call named
+    # after the schema (its default ToolStrategy). A model with native tool
+    # calling infers that from the binding; the CLI model is driven by a
+    # text protocol and has to be told outright, or it answers in prose and
+    # the run produces nothing.
+    if hasattr(model, "response_tool_name"):
+        model = model.model_copy(update={"response_tool_name": response_format.__name__})
+
     return create_agent(
-        model=require_model(),
+        model=model,
         tools=tools,
         system_prompt=system_prompt,
         response_format=response_format,
@@ -65,8 +75,10 @@ def build_agent(
         middleware=[
             # `end` rather than `error`: a capped run should return what it
             # has, not discard it.
+            # The ceiling differs by backend: the local CLI is slow enough
+            # per turn that the hosted default would overrun a sweep.
             ModelCallLimitMiddleware(
-                run_limit=settings.agent_max_model_calls, exit_behavior="end"
+                run_limit=settings.effective_max_model_calls, exit_behavior="end"
             ),
             ToolCallLimitMiddleware(
                 run_limit=settings.agent_max_tool_calls, exit_behavior="end"

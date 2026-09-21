@@ -5,7 +5,9 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app import models
 from app.checks.runner import execute_check
+from app.config import settings
 from app.db import SessionLocal
+from app.monitoring.sweep import sweep_job
 
 logger = logging.getLogger("dpm.scheduler")
 scheduler = BackgroundScheduler()
@@ -53,6 +55,20 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
     scheduler.add_job(_sync_jobs, "interval", seconds=30, id="sync_jobs")
+    # The monitor's heartbeat. Separate from the per-check jobs because it is
+    # about incidents rather than checks: it still has work to do on a day
+    # when nothing runs at all, which is exactly when an unanswered ticket
+    # most needs escalating.
+    scheduler.add_job(
+        sweep_job,
+        "interval",
+        seconds=settings.monitor_interval_seconds,
+        id="monitor_sweep",
+        # A slow sweep must not stack up behind itself; one late pass is
+        # recoverable, two concurrent ones double-comment every incident.
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
     _sync_jobs()
 

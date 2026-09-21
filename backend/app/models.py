@@ -40,6 +40,51 @@ class TicketStatus(str, enum.Enum):
     DONE = "DONE"
 
 
+class IncidentState(str, enum.Enum):
+    """Where an incident stands. This is the agent's vocabulary, not the
+    engine's - a run is PASSED/FAILED/ERROR and nothing else, deliberately.
+
+    WARNING has no corresponding run status on purpose. A check that is
+    passing but degrading - null rate climbing toward its tolerance, lag
+    trending up - is not a failure, and making the engine emit it would mean
+    teaching a deterministic comparison to have opinions about trends. The
+    trend lives across runs, so it is read across runs.
+    """
+
+    OPEN = "OPEN"
+    WARNING = "WARNING"
+    CLEARED = "CLEARED"
+    # Flapping, or known-noisy. Deliberately quiet, and says so out loud -
+    # silence that is never explained is indistinguishable from a bug.
+    SUPPRESSED = "SUPPRESSED"
+
+
+class IncidentEventKind(str, enum.Enum):
+    OPENED = "OPENED"
+    COMMENT = "COMMENT"
+    ESCALATED = "ESCALATED"
+    REOPENED = "REOPENED"
+    CLEARED = "CLEARED"
+    SUPPRESSED = "SUPPRESSED"
+
+
+class CheckOrigin(str, enum.Enum):
+    """Who authored a check, which is the consent boundary for rewriting it.
+
+    A DERIVED check is the maintenance agent's to update when the DDL moves.
+    A HUMAN check is not: someone wrote intent rather than implementation, and
+    that is exactly what catches the bugs derivation cannot. The seeded
+    inventory check is the standing example - it fails on the WAREHOUSE_ID
+    mis-mapping precisely because a person wrote what the data should be,
+    while the check derived from the MERGE encodes the MERGE's own mistake
+    and passes.
+    """
+
+    DERIVED = "DERIVED"
+    AGENT = "AGENT"
+    HUMAN = "HUMAN"
+
+
 class TicketPriority(str, enum.Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
@@ -177,6 +222,21 @@ class Check(Base):
 
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
 
+    # Provenance. Without it the maintenance agent has no way to tell a check
+    # it may rewrite from one a person wrote by hand, and "rewrite everything"
+    # would destroy the intent that makes hand-written checks worth having.
+    origin: Mapped[str] = mapped_column(
+        String, default=CheckOrigin.HUMAN.value, server_default=CheckOrigin.HUMAN.value
+    )
+    # What this check was derived from, when it was derived: the MERGE target,
+    # the file, and the commit. This is what lets a change to that file be
+    # traced forward to the checks it invalidates.
+    derived_from: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    derived_at_commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Set on any edit through the UI or API. A derived check a person has
+    # since touched is never silently rewritten - it gets a proposal instead.
+    human_edited_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -184,6 +244,14 @@ class Check(Base):
     connector: Mapped["Connector"] = relationship(foreign_keys=[connector_id], back_populates="checks")
     secondary_connector: Mapped["Connector | None"] = relationship(foreign_keys=[secondary_connector_id])
     runs: Mapped[list["CheckRun"]] = relationship(back_populates="check", cascade="all, delete-orphan")
+    incidents: Mapped[list["Incident"]] = relationship(
+        back_populates="check", cascade="all, delete-orphan"
+    )
+
+    @property
+    def agent_may_rewrite(self) -> bool:
+        """Whether the maintenance agent may apply a change without review."""
+        return self.origin != CheckOrigin.HUMAN.value and self.human_edited_at is None
 
 
 class CheckRun(Base):
@@ -200,7 +268,9 @@ class CheckRun(Base):
 
     check: Mapped["Check"] = relationship(back_populates="runs")
     rca: Mapped["RcaResult | None"] = relationship(back_populates="check_run", cascade="all, delete-orphan", uselist=False)
-    ticket: Mapped["Ticket | None"] = relationship(back_populates="check_run", cascade="all, delete-orphan", uselist=False)
+    # No cascade delete: the ticket belongs to the incident now, and deleting
+    # the run that happened to open it must not take the ticket with it.
+    ticket: Mapped["Ticket | None"] = relationship(back_populates="check_run", uselist=False)
 
 
 class RcaResult(Base):
@@ -221,11 +291,124 @@ class RcaResult(Base):
     check_run: Mapped["CheckRun"] = relationship(back_populates="rca")
 
 
+class Incident(Base):
+    """One thing going wrong, across however many runs it takes to fix.
+
+    This is the unit the reporting agent reasons about, and the reason it
+    exists is that a ticket bound to a single `CheckRun` cannot express
+    "still failing" or "recovered" - there is nowhere to put the second
+    observation. That is why every failed run used to file a fresh ticket
+    (PLAN.md FR10): the data model had no place to stand where two failures
+    of the same check were the same event.
+
+    A run is evidence about an incident. The incident is what fails, warns,
+    clears, and gets escalated when nobody responds to it.
+    """
+
+    __tablename__ = "incidents"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
+    check_id: Mapped[str] = mapped_column(ForeignKey("checks.id", ondelete="CASCADE"), index=True)
+
+    state: Mapped[str] = mapped_column(String, default=IncidentState.OPEN.value, index=True)
+    severity: Mapped[str] = mapped_column(String, default=TicketPriority.MEDIUM.value)
+    title: Mapped[str] = mapped_column(Text)
+    # The agent's current understanding, rewritten as the incident develops.
+    # Distinct from the RCA on any one run: that is a snapshot, this is the
+    # running account.
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    opened_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    cleared_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    first_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    last_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
+    )
+
+    failure_count: Mapped[int] = mapped_column(Integer, default=1)
+    # Consecutive passes since the last failure. An incident clears on a
+    # threshold rather than on the first pass, because one green run of a
+    # flapping check is not a recovery.
+    consecutive_passes: Mapped[int] = mapped_column(Integer, default=0)
+    # How many times the agent has escalated for lack of response. Kept so
+    # escalation can back off instead of nagging every tick forever.
+    escalation_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_escalated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Groups incidents the agent believes share one upstream cause, so eight
+    # checks failing on one dropped task read as one event with eight
+    # symptoms rather than eight unrelated pages.
+    correlation_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+
+    # "agent" or "rule" - which triage path decided this. Worth recording:
+    # when the agent is unavailable the rules still run, and a reader needs to
+    # know which kind of judgement they are looking at.
+    triage_source: Mapped[str] = mapped_column(String, default="rule")
+
+    check: Mapped["Check"] = relationship(back_populates="incidents")
+    events: Mapped[list["IncidentEvent"]] = relationship(
+        back_populates="incident",
+        cascade="all, delete-orphan",
+        order_by="IncidentEvent.created_at",
+    )
+    ticket: Mapped["Ticket | None"] = relationship(
+        back_populates="incident", cascade="all, delete-orphan", uselist=False
+    )
+
+    @property
+    def is_active(self) -> bool:
+        return self.state in (IncidentState.OPEN.value, IncidentState.WARNING.value)
+
+
+class IncidentEvent(Base):
+    """One thing the agent said or did about an incident.
+
+    The comment stream is the product: "still failing, 3rd run, 37 -> 412
+    keys" is the output a person acts on, and it only means anything as a
+    sequence. Each event also records the run that prompted it, so a claim in
+    a comment can be traced back to the numbers behind it.
+    """
+
+    __tablename__ = "incident_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
+    incident_id: Mapped[str] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), index=True
+    )
+    check_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
+    )
+
+    kind: Mapped[str] = mapped_column(String)
+    body: Mapped[str] = mapped_column(Text)
+    author: Mapped[str] = mapped_column(String, default="rule")
+    # The id this comment got in the external tracker, once synced. Null for
+    # an event that never left the app - which is every event while ticketing
+    # is simulated.
+    external_ref: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    incident: Mapped["Incident"] = relationship(back_populates="events")
+
+
 class Ticket(Base):
     __tablename__ = "tickets"
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
-    check_run_id: Mapped[str] = mapped_column(ForeignKey("check_runs.id", ondelete="CASCADE"), unique=True)
+    # The incident is the ticket's subject. `check_run_id` is kept as the run
+    # that opened it - useful provenance, no longer the identity - and is
+    # nullable because an incident can outlive the run that started it.
+    incident_id: Mapped[str | None] = mapped_column(
+        ForeignKey("incidents.id", ondelete="CASCADE"), unique=True, nullable=True
+    )
+    check_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
+    )
 
     key: Mapped[str] = mapped_column(String, unique=True)
     title: Mapped[str] = mapped_column(Text)
@@ -234,7 +417,15 @@ class Ticket(Base):
     assignee: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, default=TicketStatus.TODO.value)
 
+    # Set when the ticket lives in a real tracker rather than the in-app
+    # board. `external_key` is the tracker's own key (DATA-417), which is not
+    # the same as `key` - that one is ours and stays stable even if the
+    # tracker is swapped.
+    external_key: Mapped[str | None] = mapped_column(String, nullable=True)
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
-    check_run: Mapped["CheckRun"] = relationship(back_populates="ticket")
+    incident: Mapped["Incident | None"] = relationship(back_populates="ticket")
+    check_run: Mapped["CheckRun | None"] = relationship(back_populates="ticket")

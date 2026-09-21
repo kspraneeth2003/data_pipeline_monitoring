@@ -19,6 +19,61 @@ class Settings(BaseSettings):
     rca_llm_command: str = "claude"
     anthropic_api_key: str | None = None
 
+    # --- Agents -------------------------------------------------------
+    #
+    # The monitoring and maintenance agents go through LangChain's
+    # `init_chat_model`, so the provider is configuration rather than code:
+    # "openai:gpt-5", "anthropic:claude-opus-5", "ollama:llama3" all work,
+    # given the matching `langchain-<provider>` package and its API key in
+    # this file. Nothing outside `app/agents/model.py` imports a provider.
+    #
+    # Empty means no agent. Both agents then fall back to their rule-based
+    # path, which is the whole point of having one: monitoring keeps working
+    # without a model, it just stops exercising judgement.
+    agent_model: str = ""
+    agent_temperature: float = 0.0
+    openai_api_key: str | None = None
+
+    # Ceilings on one agent invocation. An agent that loops is a cost
+    # incident, and these are cheaper than discovering it on a bill.
+    agent_max_model_calls: int = 12
+    agent_max_tool_calls: int = 24
+    agent_timeout_seconds: int = 120
+
+    # How often the reporting agent sweeps for incidents needing attention.
+    # Every run already wakes the sweep through the scheduler; this is the
+    # floor on how often the *agent* is consulted, so a burst of failures
+    # cannot turn into a burst of model calls.
+    monitor_interval_seconds: int = 300
+    # An open incident whose ticket has not moved in this long gets escalated.
+    escalate_after_hours: float = 24.0
+    # ...and not again for at least this long, so escalation does not become
+    # a daily nag that gets filtered out.
+    escalation_backoff_hours: float = 24.0
+
+    # --- Jira ---------------------------------------------------------
+    #
+    # All four are required together. With any missing, tickets go to the
+    # in-app board and the app behaves identically otherwise.
+    jira_base_url: str = ""
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_project_key: str = ""
+    jira_issue_type: str = "Task"
+    # The status name to transition to on clear. Per-workflow, and renamed
+    # often enough ("Done" -> "Complete") that it has to be configurable.
+    jira_done_status: str = "Done"
+
+    @property
+    def jira_configured(self) -> bool:
+        return all(
+            [self.jira_base_url, self.jira_email, self.jira_api_token, self.jira_project_key]
+        )
+
+    @property
+    def agent_enabled(self) -> bool:
+        return bool(self.agent_model.strip())
+
     # GitHub App - lets the user grant read access to specific repositories
     # instead of pasting a URL and a personal access token. Optional: with these
     # unset the UI simply offers the paste-a-URL path on its own.

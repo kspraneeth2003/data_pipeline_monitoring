@@ -44,27 +44,6 @@ export type RcaResult = {
   created_at: string;
 };
 
-export type Ticket = {
-  id: string;
-  key: string;
-  title: string;
-  description: string;
-  priority: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-  assignee: string | null;
-  status: "TODO" | "IN_PROGRESS" | "DONE";
-  created_at: string;
-  updated_at: string;
-};
-
-export type TicketWithContext = Ticket & {
-  check_run_id: string;
-  check_id: string;
-  check_name: string;
-  database_slug: string;
-  database_name: string;
-  project_slug: string;
-};
-
 export type CheckRun = {
   id: string;
   status: "RUNNING" | "PASSED" | "FAILED" | "ERROR";
@@ -74,7 +53,6 @@ export type CheckRun = {
   metrics: Record<string, unknown> | null;
   message: string | null;
   rca: RcaResult | null;
-  ticket: Ticket | null;
 };
 
 export type ProjectHealth = {
@@ -84,7 +62,7 @@ export type ProjectHealth = {
   erroring: number;
   never_run: number;
   disabled: number;
-  open_tickets: number;
+  open_incidents: number;
   last_run_at: string | null;
   status: "PASSED" | "FAILED" | "ERROR" | "NONE";
 };
@@ -180,7 +158,13 @@ export type Incident = {
   escalation_count: number;
   correlation_id: string | null;
   triage_source: string;
-  ticket: Ticket | null;
+  // The Jira issue, as of the last sweep's refresh. Null means none exists:
+  // Jira is not configured, or filing it failed.
+  ticket_key: string | null;
+  ticket_url: string | null;
+  ticket_status: string | null;
+  ticket_assignee: string | null;
+  ticket_synced_at: string | null;
   event_count: number;
 };
 
@@ -208,7 +192,7 @@ export type CheckRevision = {
 export type MonitorStatus = {
   agent_enabled: boolean;
   agent_model: string | null;
-  ticket_backend: string;
+  ticket_backend: string | null;
   monitor_interval_seconds: number;
   maintenance_interval_seconds: number;
   incident_counts: Record<string, number>;
@@ -216,6 +200,7 @@ export type MonitorStatus = {
 };
 
 export type SweepResult = {
+  synced: number;
   reopened: number;
   escalated: number;
   agent_actions: number;
@@ -303,7 +288,6 @@ export const api = {
     request<Project>(`/api/projects/${key}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteProject: (key: string) =>
     request<void>(`/api/projects/${key}`, { method: "DELETE" }),
-  listProjectTickets: (key: string) => request<TicketWithContext[]>(`/api/projects/${key}/tickets`),
 
   listDatabases: (projectKey: string) => request<Database[]>(`/api/projects/${projectKey}/databases`),
   getDatabase: (projectKey: string, dbKey: string) =>
@@ -362,9 +346,6 @@ export const api = {
     request<Connector>("/api/connectors", { method: "POST", body: JSON.stringify(payload) }),
   deleteConnector: (id: string) => request<{ ok: true }>(`/api/connectors/${id}`, { method: "DELETE" }),
 
-  listTickets: () => request<TicketWithContext[]>("/api/tickets"),
-  updateTicket: (id: string, payload: Record<string, unknown>) =>
-    request<Ticket>(`/api/tickets/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   getMonitorStatus: () => request<MonitorStatus>("/api/monitor/status"),
   runSweep: () => request<SweepResult>("/api/monitor/sweep", { method: "POST" }),
   listIncidents: (slug: string, state?: string) =>

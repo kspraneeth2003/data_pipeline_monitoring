@@ -39,7 +39,9 @@ def monitor_status(db: Session = Depends(get_db)):
 
     Reports the model name rather than a bare "enabled", because the most
     common failure is a model string that is set but unusable - and that
-    looks identical to "on" from anywhere else.
+    looks identical to "on" from anywhere else. `ticket_backend` is null when
+    Jira is not configured, which means incidents are tracked here and no
+    issues are filed anywhere.
     """
     counts = {state.value: 0 for state in IncidentState}
     for state, count in db.execute(
@@ -50,7 +52,7 @@ def monitor_status(db: Session = Depends(get_db)):
     return schemas.MonitorStatusOut(
         agent_enabled=settings.agent_enabled,
         agent_model=settings.agent_model or None,
-        ticket_backend="jira" if settings.jira_configured else "board",
+        ticket_backend="jira" if settings.jira_configured else None,
         monitor_interval_seconds=settings.monitor_interval_seconds,
         maintenance_interval_seconds=settings.maintenance_interval_seconds,
         incident_counts=counts,

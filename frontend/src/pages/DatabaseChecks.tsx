@@ -84,7 +84,7 @@ export function DatabaseChecks() {
         <div className="rounded-xl border border-dashed border-border bg-surface px-6 py-12 text-center">
           <h2 className="text-base font-medium text-foreground">No checks on this database</h2>
           <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">
-            Checks run on a cron schedule against {database.name} and open a ticket when they fail.
+            Checks run on a cron schedule against {database.name} and raise an incident when they fail.
           </p>
           <Link
             to={`/projects/${slug}/databases/${dbSlug}/checks/new`}

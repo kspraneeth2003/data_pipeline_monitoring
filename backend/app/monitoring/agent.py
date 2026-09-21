@@ -26,12 +26,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.agents.runner import build_agent, invoke_agent
+from app.config import settings
 from app.models import (
     Incident,
     IncidentEventKind,
+    IncidentSeverity,
     IncidentState,
-    TicketPriority,
-    TicketStatus,
 )
 from app.monitoring import incidents as lifecycle
 from app.monitoring.prompts import REPORTING_SYSTEM_PROMPT
@@ -46,7 +46,7 @@ logger = logging.getLogger("dpm.monitoring.agent")
 # worth. Beyond this the oldest are reviewed first; the rest wait a sweep.
 MAX_INCIDENTS_PER_SWEEP = 25
 
-VALID_SEVERITIES = {p.value for p in TicketPriority}
+VALID_SEVERITIES = {p.value for p in IncidentSeverity}
 
 
 class IncidentDecision(BaseModel):
@@ -83,13 +83,17 @@ class ReportingDecisions(BaseModel):
 
 
 def _incident_brief(incident: Incident) -> str:
-    ticket = incident.ticket
+    issue = (
+        f"{incident.ticket_key}/{incident.ticket_status or 'unknown'}"
+        if incident.ticket_key
+        else "none"
+    )
     return (
         f"- incident_id={incident.id} check={incident.check.name!r} "
         f"type={incident.check.type} state={incident.state} "
         f"severity={incident.severity} failures={incident.failure_count} "
         f"hours_open={round((lifecycle.utcnow() - incident.opened_at).total_seconds() / 3600, 1)} "
-        f"ticket={ticket.key + '/' + ticket.status if ticket else 'none'}"
+        f"jira={issue}"
     )
 
 
@@ -141,10 +145,12 @@ def apply_decision(db: Session, incident: Incident, decision: IncidentDecision) 
             )
             action = "COMMENT"
 
+    backend = ticket_backend()
+
     if decision.severity in VALID_SEVERITIES:
         incident.severity = decision.severity
-        if incident.ticket:
-            incident.ticket.priority = decision.severity
+        if backend is not None and incident.ticket_key:
+            backend.set_priority(incident, decision.severity)
 
     if decision.correlation_group:
         # Namespaced so a label the model reuses across sweeps cannot merge
@@ -166,14 +172,24 @@ def apply_decision(db: Session, incident: Incident, decision: IncidentDecision) 
     elif action == "SUPPRESS":
         incident.state = IncidentState.SUPPRESSED.value
 
+    body = decision.comment.strip()
     lifecycle.add_event(
-        db, incident, kind, decision.comment.strip(), author="agent", check_run_id=incident.last_run_id
+        db, incident, kind, body, author="agent", check_run_id=incident.last_run_id
     )
     incident.triage_source = "agent"
-    if incident.ticket:
-        ticket_backend().comment(db, incident.ticket, decision.comment.strip())
+
+    # The incident record is already written. Mirroring to Jira is an extra
+    # that may fail, and a tracker that is down must not cost the decision.
+    if backend is not None and incident.ticket_key:
         if action == "SUPPRESS":
-            incident.ticket.status = TicketStatus.DONE.value
+            # Suppression closes the issue, because leaving one open that
+            # nothing will ever comment on again is worse than closing it
+            # with a stated reason.
+            backend.transition(incident, done=True, comment=body)
+            incident.ticket_status = settings.jira_done_status
+            incident.ticket_moved_at = lifecycle.utcnow()
+        else:
+            backend.comment(incident, body)
     return True
 
 

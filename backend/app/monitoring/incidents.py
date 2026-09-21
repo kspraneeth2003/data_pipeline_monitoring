@@ -21,8 +21,8 @@ from app.models import (
     Incident,
     IncidentEvent,
     IncidentEventKind,
+    IncidentSeverity,
     IncidentState,
-    TicketPriority,
     cuid,
 )
 
@@ -133,7 +133,7 @@ def open_incident(
     run: models.CheckRun,
     title: str,
     summary: str | None,
-    severity: str = TicketPriority.MEDIUM.value,
+    severity: str = IncidentSeverity.MEDIUM.value,
     triage_source: str = "rule",
     correlate: bool = True,
 ) -> Incident:

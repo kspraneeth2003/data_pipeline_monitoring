@@ -93,10 +93,10 @@ export function Projects() {
                   <dt>Checks</dt>
                   <dd className="font-medium text-foreground">{project.health.total_checks}</dd>
                 </div>
-                {project.health.open_tickets > 0 && (
+                {project.health.open_incidents > 0 && (
                   <div className="flex gap-1">
-                    <dt>Open tickets</dt>
-                    <dd className="font-medium text-foreground">{project.health.open_tickets}</dd>
+                    <dt>Open incidents</dt>
+                    <dd className="font-medium text-foreground">{project.health.open_incidents}</dd>
                   </div>
                 )}
                 <div className="flex gap-1">

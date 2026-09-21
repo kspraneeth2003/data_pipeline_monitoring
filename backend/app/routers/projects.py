@@ -74,13 +74,19 @@ def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.Projec
         if latest.status in counts:
             counts[latest.status] += 1
 
-    open_tickets = 0
+    # Counted from incidents, not from Jira. This is a health rollup rendered
+    # on every project card, and it must not depend on a network call to an
+    # external tracker that may be slow, down, or not configured at all.
+    open_incidents = 0
     if checks:
-        open_tickets = (
-            db.query(models.Ticket)
-            .join(models.CheckRun, models.Ticket.check_run_id == models.CheckRun.id)
-            .filter(models.CheckRun.check_id.in_([c.id for c in checks]))
-            .filter(models.Ticket.status != models.TicketStatus.DONE.value)
+        open_incidents = (
+            db.query(models.Incident)
+            .filter(models.Incident.check_id.in_([c.id for c in checks]))
+            .filter(
+                models.Incident.state.in_(
+                    [models.IncidentState.OPEN.value, models.IncidentState.WARNING.value]
+                )
+            )
             .count()
         )
 
@@ -102,7 +108,7 @@ def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.Projec
         erroring=counts["ERROR"],
         never_run=never_run,
         disabled=disabled,
-        open_tickets=open_tickets,
+        open_incidents=open_incidents,
         last_run_at=last_run_at,
         status=status,
     )
@@ -223,35 +229,6 @@ def update_project(key: str, payload: schemas.ProjectUpdate, db: Session = Depen
 def delete_project(key: str, db: Session = Depends(get_db)):
     db.delete(_resolve_project(db, key))
     db.commit()
-
-
-@router.get("/{key}/tickets", response_model=list[schemas.TicketWithContextOut])
-def list_project_tickets(key: str, db: Session = Depends(get_db)):
-    project = _resolve_project(db, key)
-    rows = (
-        db.query(models.Ticket, models.Check, models.Database)
-        .join(models.CheckRun, models.Ticket.check_run_id == models.CheckRun.id)
-        .join(models.Check, models.CheckRun.check_id == models.Check.id)
-        .join(models.Database, models.Check.database_id == models.Database.id)
-        .filter(models.Database.project_id == project.id)
-        .order_by(models.Ticket.created_at.desc())
-        .all()
-    )
-    return [
-        schemas.TicketWithContextOut(
-            **schemas.TicketOut.model_validate(ticket).model_dump(),
-            check_run_id=ticket.check_run_id,
-            check_id=check.id,
-            check_name=check.name,
-            database_slug=database.slug,
-            database_name=database.name,
-            project_slug=project.slug,
-        )
-        for ticket, check, database in rows
-    ]
-
-
-# --- Databases within a project -----------------------------------------
 
 
 @router.get("/{key}/connectors", response_model=list[schemas.ConnectorOut])

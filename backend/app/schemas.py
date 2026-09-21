@@ -144,20 +144,6 @@ class RcaOut(BaseModel):
     created_at: datetime
 
 
-class TicketOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    key: str
-    title: str
-    description: str
-    priority: str
-    assignee: str | None
-    status: str
-    created_at: datetime
-    updated_at: datetime
-
-
 class CheckRunOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -169,7 +155,6 @@ class CheckRunOut(BaseModel):
     metrics: dict[str, Any] | None
     message: str | None
     rca: RcaOut | None = None
-    ticket: TicketOut | None = None
 
 
 class CheckOut(BaseModel):
@@ -193,21 +178,6 @@ class CheckOut(BaseModel):
     runs: list[CheckRunOut] = []
 
 
-class TicketWithContextOut(TicketOut):
-    check_run_id: str
-    check_id: str
-    check_name: str
-    # Enough context to link straight to the check in the project tree.
-    database_slug: str
-    database_name: str
-    project_slug: str
-
-
-class TicketUpdate(BaseModel):
-    status: str | None = None
-    assignee: str | None = None
-
-
 class ProjectHealth(BaseModel):
     """Rollup shown on a project card. Ordered so the worst state wins: a
     project with one failing check reads as failing, not as "mostly passing"."""
@@ -218,7 +188,7 @@ class ProjectHealth(BaseModel):
     erroring: int
     never_run: int
     disabled: int
-    open_tickets: int
+    open_incidents: int
     last_run_at: datetime | None
     status: str  # PASSED | FAILED | ERROR | NONE
 
@@ -420,7 +390,13 @@ class IncidentOut(BaseModel):
     escalation_count: int
     correlation_id: str | None
     triage_source: str
-    ticket: TicketOut | None
+    # The Jira issue, as of the last sweep's refresh. Null means none exists -
+    # Jira unconfigured, or filing failed.
+    ticket_key: str | None
+    ticket_url: str | None
+    ticket_status: str | None
+    ticket_assignee: str | None
+    ticket_synced_at: datetime | None
     event_count: int
 
     @classmethod
@@ -442,7 +418,11 @@ class IncidentOut(BaseModel):
             escalation_count=incident.escalation_count,
             correlation_id=incident.correlation_id,
             triage_source=incident.triage_source,
-            ticket=TicketOut.model_validate(incident.ticket) if incident.ticket else None,
+            ticket_key=incident.ticket_key,
+            ticket_url=incident.ticket_url,
+            ticket_status=incident.ticket_status,
+            ticket_assignee=incident.ticket_assignee,
+            ticket_synced_at=incident.ticket_synced_at,
             event_count=len(incident.events),
         )
 
@@ -504,7 +484,9 @@ class MonitorStatusOut(BaseModel):
     # The model string, so a set-but-unusable model is distinguishable from
     # no model at all - they look identical from everywhere else.
     agent_model: str | None
-    ticket_backend: str
+    # Where issues are filed, or null when Jira is not configured and
+    # incidents are tracked here only.
+    ticket_backend: str | None
     monitor_interval_seconds: int
     maintenance_interval_seconds: int
     incident_counts: dict[str, int]
@@ -512,6 +494,7 @@ class MonitorStatusOut(BaseModel):
 
 
 class SweepResultOut(BaseModel):
+    synced: int
     reopened: int
     escalated: int
     agent_actions: int

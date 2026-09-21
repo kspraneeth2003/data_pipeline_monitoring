@@ -57,18 +57,24 @@ def _incident_summary(incident: Incident) -> dict:
         "consecutive_passes": incident.consecutive_passes,
         "escalation_count": incident.escalation_count,
         "correlation_id": incident.correlation_id,
-        "ticket": (
+        # What Jira currently says, as of the sweep's refresh. Null means no
+        # issue exists - Jira is unconfigured, or filing failed - which is
+        # itself worth reporting rather than treating as "nobody responded".
+        "jira_issue": (
             {
-                "key": incident.ticket.key,
-                "status": incident.ticket.status,
-                "priority": incident.ticket.priority,
-                "assignee": incident.ticket.assignee,
-                # The number that answers "has anyone touched this?"
-                "hours_since_ticket_update": round(
-                    (utcnow() - incident.ticket.updated_at).total_seconds() / 3600, 1
+                "key": incident.ticket_key,
+                "status": incident.ticket_status,
+                "assignee": incident.ticket_assignee,
+                # The number that answers "has anyone touched this?" -
+                # measured from the issue's own last change in Jira, not
+                # from our record, which moves for our own writes too.
+                "hours_since_issue_changed": (
+                    round((utcnow() - incident.ticket_moved_at).total_seconds() / 3600, 1)
+                    if incident.ticket_moved_at
+                    else None
                 ),
             }
-            if incident.ticket
+            if incident.ticket_key
             else None
         ),
     }

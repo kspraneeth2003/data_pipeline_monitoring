@@ -151,12 +151,12 @@ export function ProjectSettings() {
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
           Deleting {project.name} also deletes its {project.databases.length} database
           {project.databases.length === 1 ? "" : "s"}, their {project.health.total_checks} check
-          {project.health.total_checks === 1 ? "" : "s"}, and all run history and tickets. The databases in
+          {project.health.total_checks === 1 ? "" : "s"}, and all run history and incidents. The databases in
           Snowflake are not touched.
         </p>
         <div className="mt-4">
           <DeleteButton
-            confirmMessage={`Delete project "${project.name}"? This deletes ${project.databases.length} database link(s), ${project.health.total_checks} check(s), and all run history and tickets. The databases in Snowflake are not touched.`}
+            confirmMessage={`Delete project "${project.name}"? This deletes ${project.databases.length} database link(s), ${project.health.total_checks} check(s), and all run history and incidents. The databases in Snowflake are not touched.`}
             onDelete={async () => {
               await api.deleteProject(slug);
               navigate("/");

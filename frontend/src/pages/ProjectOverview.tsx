@@ -51,18 +51,15 @@ export function ProjectOverview() {
         </div>
         {project.description && <p className="mt-1 max-w-2xl text-sm text-zinc-500">{project.description}</p>}
 
-        {/* The two agents' output. Incidents is where the monitor reports;
-            Proposed changes is where the maintenance agent does. Both are
-            per-project because that is the level a person owns. */}
+        {/* The two agents' output. Incidents is where the monitor reports -
+            and the record of what went wrong, whether or not it reached
+            Jira. Proposed changes is where the maintenance agent reports. */}
         <nav className="mt-3 flex flex-wrap gap-4 text-sm">
           <Link to={`/projects/${slug}/incidents`} className="text-accent hover:underline">
             Incidents
           </Link>
           <Link to={`/projects/${slug}/changes`} className="text-accent hover:underline">
             Proposed changes
-          </Link>
-          <Link to={`/projects/${slug}/tickets`} className="text-accent hover:underline">
-            Tickets
           </Link>
         </nav>
       </header>
@@ -76,7 +73,7 @@ export function ProjectOverview() {
             value: project.health.failing + project.health.erroring,
             tone: "text-red-600 dark:text-red-400",
           },
-          { label: "Open tickets", value: project.health.open_tickets, to: `/projects/${slug}/tickets` },
+          { label: "Open incidents", value: project.health.open_incidents, to: `/projects/${slug}/incidents` },
         ].map((stat) => {
           const body = (
             <>

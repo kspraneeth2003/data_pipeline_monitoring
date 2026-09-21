@@ -5,9 +5,12 @@ agent returned and the database, and it is the part that has to hold when
 the model is wrong - so it is tested directly with the responses a wrong
 model would produce.
 
-The two refusals are the important ones. An agent that can close tickets on
+The two refusals are the important ones. An agent that can close an issue on
 reasoning alone will eventually close one on a pipeline that is still
 broken, and that failure is silent: everybody believes it is handled.
+
+A fake Jira stands in for the tracker. It records what would have been sent,
+which is what the mirroring assertions actually care about.
 """
 
 import itertools
@@ -26,9 +29,7 @@ from app.models import (
     Incident,
     IncidentState,
     Project,
-    Ticket,
-    TicketPriority,
-    TicketStatus,
+    IncidentSeverity,
     cuid,
 )
 from app.monitoring import incidents as lifecycle
@@ -48,12 +49,43 @@ def db():
 
 
 @pytest.fixture(autouse=True)
-def board_backend(monkeypatch):
+def jira(monkeypatch):
+    from app.tickets.base import TicketRef, TicketState
     from app.tickets.registry import ticket_backend
 
+    class FakeJira:
+        name = "jira"
+
+        def __init__(self):
+            self.comments: list[str] = []
+            self.transitions: list[bool] = []
+            self.priorities: list[str] = []
+
+        def create(self, incident, content):
+            return TicketRef(key="DATA-1", url="https://example.atlassian.net/browse/DATA-1")
+
+        def comment(self, incident, body):
+            self.comments.append(body)
+            return True
+
+        def transition(self, incident, done, comment=None):
+            if comment:
+                self.comments.append(comment)
+            self.transitions.append(done)
+            return True
+
+        def set_priority(self, incident, priority):
+            self.priorities.append(priority)
+            return True
+
+        def fetch_state(self, incident):
+            return TicketState(key="DATA-1", status="To Do")
+
+    fake = FakeJira()
     ticket_backend.cache_clear()
-    monkeypatch.setattr("app.config.settings.jira_base_url", "")
-    yield
+    monkeypatch.setattr("app.monitoring.triage.ticket_backend", lambda: fake)
+    monkeypatch.setattr("app.monitoring.agent.ticket_backend", lambda: fake)
+    yield fake
     ticket_backend.cache_clear()
 
 
@@ -134,25 +166,38 @@ class TestAppliedActions:
         assert "412" in event.body
         assert incident.triage_source == "agent"
 
-    def test_escalate_bumps_the_counter_and_the_ticket(self, db, incident):
+    def test_escalate_bumps_the_counter_and_the_jira_priority(self, db, incident, jira):
         apply_decision(
-            db, incident, decide(action="ESCALATE", severity=TicketPriority.HIGH.value)
+            db, incident, decide(action="ESCALATE", severity=IncidentSeverity.HIGH.value)
         )
         assert incident.escalation_count == 1
         assert incident.last_escalated_at is not None
-        assert incident.severity == TicketPriority.HIGH.value
-        assert db.query(Ticket).one().priority == TicketPriority.HIGH.value
+        assert incident.severity == IncidentSeverity.HIGH.value
+        assert jira.priorities == [IncidentSeverity.HIGH.value]
 
-    def test_suppress_closes_the_ticket_and_says_why(self, db, incident):
-        # Suppression is a state with a reason attached, never a silent drop.
+    def test_suppress_closes_the_issue_and_says_why(self, db, incident, jira):
+        # Suppression is a state with a reason attached, never a silent drop -
+        # and leaving an issue open that nothing will comment on again is
+        # worse than closing it with a stated reason.
         apply_decision(
             db,
             incident,
             decide(action="SUPPRESS", comment="Opened and cleared 6 times this week."),
         )
         assert incident.state == IncidentState.SUPPRESSED.value
-        assert db.query(Ticket).one().status == TicketStatus.DONE.value
+        assert jira.transitions == [True]
         assert incident.events[-1].kind == "SUPPRESSED"
+
+    def test_a_comment_is_mirrored_to_jira(self, db, incident, jira):
+        apply_decision(db, incident, decide(action="COMMENT"))
+        assert any("412" in c for c in jira.comments)
+
+    def test_nothing_breaks_when_there_is_no_tracker(self, db, incident, monkeypatch):
+        # No Jira is a supported way to run this: the incident record is
+        # still written, it just has no external face.
+        monkeypatch.setattr("app.monitoring.agent.ticket_backend", lambda: None)
+        assert apply_decision(db, incident, decide(action="COMMENT")) is True
+        assert incident.events[-1].author == "agent"
 
     def test_correlation_group_is_namespaced(self, db, incident):
         # An unqualified label the model reuses next week would silently

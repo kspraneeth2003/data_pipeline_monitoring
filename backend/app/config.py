@@ -54,7 +54,9 @@ class Settings(BaseSettings):
     # floor on how often the *agent* is consulted, so a burst of failures
     # cannot turn into a burst of model calls.
     monitor_interval_seconds: int = 300
-    # An open incident whose ticket has not moved in this long gets escalated.
+    # An open incident whose Jira issue has not moved in this long gets
+    # escalated. Measured from the issue's own last status change, read back
+    # from Jira - not from our record, which moves for our own writes too.
     escalate_after_hours: float = 24.0
     # ...and not again for at least this long, so escalation does not become
     # a daily nag that gets filtered out.
@@ -62,14 +64,15 @@ class Settings(BaseSettings):
     # Most escalations one sweep may issue, oldest first. Without a cap the
     # first sweep over an existing backlog escalates everything at once -
     # observed at 189 on the local database - which is both unreadable and,
-    # with a real tracker attached, several hundred API calls in one tick.
+    # with Jira attached, several hundred API calls in one tick.
     # The rest are not lost, only deferred to the next sweep.
     max_escalations_per_sweep: int = 10
 
     # --- Jira ---------------------------------------------------------
     #
-    # All four are required together. With any missing, tickets go to the
-    # in-app board and the app behaves identically otherwise.
+    # All four are required together. With any missing there is no issue
+    # tracker at all: incidents are still opened, escalated and cleared in
+    # this app, they simply have no Jira issue attached.
     jira_base_url: str = ""
     jira_email: str = ""
     jira_api_token: str = ""
@@ -78,6 +81,9 @@ class Settings(BaseSettings):
     # The status name to transition to on clear. Per-workflow, and renamed
     # often enough ("Done" -> "Complete") that it has to be configurable.
     jira_done_status: str = "Done"
+    # Where to move an issue when an incident reopens - a check that is
+    # failing again after its issue was closed.
+    jira_reopen_status: str = "To Do"
 
     @property
     def jira_configured(self) -> bool:

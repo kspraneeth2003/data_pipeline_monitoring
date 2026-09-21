@@ -146,19 +146,6 @@ export function CheckDetail() {
                   </div>
                 )}
 
-                {run.ticket && (
-                  <div className="mt-2 rounded-lg border border-border bg-zinc-50 p-3 text-xs dark:bg-white/[0.03]">
-                    <div className="flex items-center gap-2">
-                      <Link to="/tickets" className="font-mono font-semibold text-zinc-700 hover:text-accent dark:text-zinc-300">
-                        {run.ticket.key}
-                      </Link>
-                      <StatusBadge status={run.ticket.status} />
-                      <span className="text-zinc-500 dark:text-zinc-400">{run.ticket.priority}</span>
-                    </div>
-                    <div className="mt-1 text-zinc-700 dark:text-zinc-300">{run.ticket.title}</div>
-                    <div className="mt-1 text-zinc-500 dark:text-zinc-400">Assignee: {run.ticket.assignee ?? "Unassigned"}</div>
-                  </div>
-                )}
               </div>
             ))}
 

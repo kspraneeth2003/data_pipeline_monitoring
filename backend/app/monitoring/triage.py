@@ -3,9 +3,9 @@
 This is the floor, in the same sense `rca/heuristic.py` is the floor for RCA.
 It is deliberately dumb - it opens on failure, comments on repeat, clears on
 recovery, escalates on age - and it is deliberately complete: with the agent
-switched off, DPM still files one ticket per incident instead of one per run,
-still comments as things develop, and still closes what recovered. The agent
-replaces the *judgement*, not the plumbing.
+switched off, DPM still files one Jira issue per incident instead of one per
+run, still comments as things develop, and still closes what recovered. The
+agent replaces the *judgement*, not the plumbing.
 
 What the rules cannot do, and the agent can:
 
@@ -16,6 +16,12 @@ What the rules cannot do, and the agent can:
 
 Keeping those out of here is what keeps this file honest. Every rule below is
 a threshold someone can read off the page and predict.
+
+**Incidents live here; issues live in Jira.** Everything in this module
+works whether or not a tracker is configured - the incident and its event
+stream are written to Postgres either way, and the Jira call is an extra
+that may fail. An unreachable tracker costs the external copy of a comment,
+never the record of what happened.
 """
 
 import logging
@@ -29,10 +35,9 @@ from app.config import settings
 from app.models import (
     Incident,
     IncidentEventKind,
+    IncidentSeverity,
     IncidentState,
     RunStatus,
-    TicketPriority,
-    TicketStatus,
 )
 from app.monitoring import incidents as lifecycle
 from app.tickets.base import TicketContent
@@ -45,17 +50,23 @@ logger = logging.getLogger("dpm.monitoring.triage")
 # for reasons worth tracking separately.
 REOPEN_WINDOW = timedelta(hours=6)
 
+# Jira status names that mean "nobody has picked this up". Compared
+# lower-cased and loosely, because workflows are per-project: "To Do",
+# "Open", "Backlog" and "Selected for Development" all mean untouched, and a
+# site that renamed one is normal rather than misconfigured.
+UNTOUCHED_STATUSES = {"to do", "todo", "open", "backlog", "new", "selected for development"}
+
 
 def severity_for(run_status: str, failure_count: int) -> str:
-    """An ERROR outrules a FAILED: a check that could not run at all means the
+    """An ERROR outranks a FAILED: a check that could not run at all means the
     warehouse or the credentials are wrong, which blocks every other answer.
     Sustained failure escalates on its own - something broken for ten runs is
     not the same news as something broken once."""
     if run_status == RunStatus.ERROR.value:
-        return TicketPriority.HIGH.value
+        return IncidentSeverity.HIGH.value
     if failure_count >= 10:
-        return TicketPriority.HIGH.value
-    return TicketPriority.MEDIUM.value
+        return IncidentSeverity.HIGH.value
+    return IncidentSeverity.MEDIUM.value
 
 
 def describe_failure(check: models.Check, run: models.CheckRun) -> str:
@@ -77,7 +88,7 @@ def build_ticket_content(
             f"Next steps: {rca.get('nextSteps') or 'Not determined.'}",
             "",
         ]
-    lines.append(f"Incident {incident.id} - further updates will be added as comments.")
+    lines.append(f"DPM incident {incident.id} - updates will be added as comments.")
 
     return TicketContent(
         title=f"{check.name}: {'error' if run.status == RunStatus.ERROR.value else 'failure'} detected",
@@ -86,6 +97,34 @@ def build_ticket_content(
         assignee=(rca or {}).get("suggestedOwner"),
         labels=("dpm", f"check-{check.type.lower().replace('_', '-')}"),
     )
+
+
+def file_issue(incident: Incident, content: TicketContent) -> None:
+    """File the incident's Jira issue and record the reference.
+
+    Silent when there is no tracker: an unticketed incident is a normal
+    state, not a failure. A failed *filing* is logged and left for the next
+    sweep to retry, rather than faked with a local key that would never
+    reconcile with anything in Jira.
+    """
+    backend = ticket_backend()
+    if backend is None:
+        return
+    ref = backend.create(incident, content)
+    if ref is None:
+        return
+    incident.ticket_key = ref.key
+    incident.ticket_url = ref.url
+    incident.ticket_status = settings.jira_reopen_status
+    incident.ticket_synced_at = lifecycle.utcnow()
+    incident.ticket_moved_at = lifecycle.utcnow()
+
+
+def post_comment(incident: Incident, body: str) -> None:
+    """Mirror a comment onto the Jira issue, if there is one."""
+    backend = ticket_backend()
+    if backend is not None and incident.ticket_key:
+        backend.comment(incident, body)
 
 
 def recently_cleared_incident(db: Session, check_id: str) -> Incident | None:
@@ -102,22 +141,29 @@ def recently_cleared_incident(db: Session, check_id: str) -> Incident | None:
     ).first()
 
 
-def on_failed_run(db: Session, check: models.Check, run: models.CheckRun, rca: dict | None) -> Incident:
+def on_failed_run(
+    db: Session, check: models.Check, run: models.CheckRun, rca: dict | None
+) -> Incident:
     """A check just failed. Open, continue, or revive an incident for it."""
     incident = lifecycle.active_incident_for(db, check.id)
 
     if incident is None:
         revived = recently_cleared_incident(db, check.id)
         if revived is not None:
-            lifecycle.reopen_incident(
-                db,
-                revived,
+            body = (
                 f"Failing again {_ago(revived)} after clearing - treating this as the same "
-                f"incident recurring rather than a new one. {run.message or ''}".strip(),
-                check_run_id=run.id,
-            )
+                f"incident recurring rather than a new one. {run.message or ''}"
+            ).strip()
+            lifecycle.reopen_incident(db, revived, body, check_run_id=run.id)
             revived.failure_count += 1
             revived.severity = severity_for(run.status, revived.failure_count)
+            if revived.ticket_key:
+                backend = ticket_backend()
+                if backend is not None:
+                    backend.transition(revived, done=False, comment=body)
+            else:
+                # The issue was never filed, or Jira only came online later.
+                file_issue(revived, build_ticket_content(check, revived, run, rca))
             db.commit()
             return revived
 
@@ -129,28 +175,12 @@ def on_failed_run(db: Session, check: models.Check, run: models.CheckRun, rca: d
             summary=(rca or {}).get("summary") or describe_failure(check, run),
             severity=severity_for(run.status, 1),
         )
-        content = build_ticket_content(check, incident, run, rca)
-        ref = ticket_backend().create(db, incident, content)
-        db.add(
-            models.Ticket(
-                id=models.cuid(),
-                incident_id=incident.id,
-                check_run_id=run.id,
-                key=ref.key,
-                title=content.title,
-                description=content.description,
-                priority=content.priority,
-                assignee=content.assignee,
-                status=TicketStatus.TODO.value,
-                external_key=ref.external_key,
-                external_url=ref.external_url,
-            )
-        )
+        file_issue(incident, build_ticket_content(check, incident, run, rca))
         db.commit()
         return incident
 
     # Already open. Record it, and comment only when there is news - a
-    # comment on every run of a check failing all day is how a ticket becomes
+    # comment on every run of a check failing all day is how an issue becomes
     # unreadable and then muted.
     previous_message = _last_reported_message(db, incident)
     lifecycle.record_failure(db, incident, run)
@@ -163,8 +193,13 @@ def on_failed_run(db: Session, check: models.Check, run: models.CheckRun, rca: d
             f"  now: {run.message}"
         )
         lifecycle.add_event(db, incident, IncidentEventKind.COMMENT, body, check_run_id=run.id)
-        if incident.ticket:
-            ticket_backend().comment(db, incident.ticket, body)
+        post_comment(incident, body)
+
+    # A failure with no issue behind it - Jira was down when it opened, or
+    # was configured afterwards. Retried here so the gap closes on its own.
+    if not incident.ticket_key:
+        file_issue(incident, build_ticket_content(check, incident, run, rca))
+
     db.commit()
     return incident
 
@@ -185,17 +220,69 @@ def on_passed_run(db: Session, check: models.Check, run: models.CheckRun) -> Inc
         f"{incident.failure_count} failure(s). Open for {_duration(incident)}."
     )
     lifecycle.clear_incident(db, incident, body, check_run_id=run.id)
-    if incident.ticket:
-        ticket_backend().transition(db, incident.ticket, TicketStatus.DONE.value, body)
+    backend = ticket_backend()
+    if backend is not None and incident.ticket_key:
+        backend.transition(incident, done=True, comment=body)
+        incident.ticket_status = settings.jira_done_status
+        incident.ticket_moved_at = lifecycle.utcnow()
     db.commit()
     return incident
+
+
+def sync_ticket_state(db: Session, incidents: list[Incident]) -> int:
+    """Refresh what Jira says about each incident's issue.
+
+    Escalation asks "has anyone responded", and that is a fact about Jira,
+    not about this database. Reading it once per sweep keeps the network
+    call out of every individual decision - and keeps `ticket_moved_at`
+    meaning what it says, which is when the *issue* last changed rather than
+    when we last wrote to our own record.
+    """
+    backend = ticket_backend()
+    if backend is None:
+        return 0
+
+    synced = 0
+    for incident in incidents:
+        if not incident.ticket_key:
+            continue
+        state = backend.fetch_state(incident)
+        if state is None:
+            continue
+        if state.status != incident.ticket_status or state.assignee != incident.ticket_assignee:
+            incident.ticket_moved_at = lifecycle.utcnow()
+        incident.ticket_status = state.status
+        incident.ticket_assignee = state.assignee
+        incident.ticket_url = state.url or incident.ticket_url
+        incident.ticket_synced_at = lifecycle.utcnow()
+        synced += 1
+
+    if synced:
+        db.commit()
+    return synced
+
+
+def _is_untouched(incident: Incident) -> bool:
+    """Whether the issue looks like nobody has picked it up.
+
+    An incident with no issue counts as untouched: there is nothing for
+    anyone to have responded to, which is exactly the case escalation should
+    surface rather than skip.
+    """
+    if not incident.ticket_key:
+        return True
+    if incident.ticket_assignee:
+        return False
+    if not incident.ticket_status:
+        return True
+    return incident.ticket_status.strip().lower() in UNTOUCHED_STATUSES
 
 
 def escalate_stale(db: Session) -> list[Incident]:
     """Poke the incidents nobody has responded to.
 
     This is the "not even being noticed" case, and it is about the human side
-    rather than the pipeline: the check is still failing, the ticket is still
+    rather than the pipeline: the check is still failing, the issue is still
     untouched, and silence has been read as resolution. Backed off so a
     long-running incident produces occasional escalations rather than a daily
     nag, which gets filtered and then ignored.
@@ -226,29 +313,38 @@ def escalate_stale(db: Session) -> list[Incident]:
             break
         if incident.last_escalated_at and incident.last_escalated_at > backoff_before:
             continue
-        ticket = incident.ticket
-        # A ticket someone has picked up is being noticed. Only untouched
-        # ones are escalated - the point is absence of response, not slowness.
-        if ticket and ticket.status != TicketStatus.TODO.value:
+        # Someone engaging with the issue is the signal to stop poking. The
+        # point is absence of response, not slowness.
+        if not _is_untouched(incident):
+            continue
+        # ...and if they engaged recently, give them the backoff window even
+        # though the issue has drifted back to an untouched-looking status.
+        if incident.ticket_moved_at and incident.ticket_moved_at > backoff_before:
             continue
 
         incident.escalation_count += 1
         incident.last_escalated_at = now
-        if incident.severity != TicketPriority.CRITICAL.value:
+        if incident.severity != IncidentSeverity.CRITICAL.value:
             incident.severity = (
-                TicketPriority.CRITICAL.value
+                IncidentSeverity.CRITICAL.value
                 if incident.escalation_count >= 2
-                else TicketPriority.HIGH.value
+                else IncidentSeverity.HIGH.value
             )
+        where = (
+            f"the issue is still {incident.ticket_status or 'unstarted'}"
+            if incident.ticket_key
+            else "no issue was ever filed for it"
+        )
         body = (
             f"No response after {_duration(incident)} and {incident.failure_count} failed "
-            f"run(s); the ticket is still {ticket.status if ticket else 'unfiled'}. "
-            f"Raising priority to {incident.severity}."
+            f"run(s); {where}. Raising priority to {incident.severity}."
         )
         lifecycle.add_event(db, incident, IncidentEventKind.ESCALATED, body)
-        if ticket:
-            ticket.priority = incident.severity
-            ticket_backend().comment(db, ticket, body)
+
+        backend = ticket_backend()
+        if backend is not None and incident.ticket_key:
+            backend.set_priority(incident, incident.severity)
+            backend.comment(incident, body)
         escalated.append(incident)
 
     if escalated:
@@ -259,7 +355,7 @@ def escalate_stale(db: Session) -> list[Incident]:
 def reopen_closed_but_failing(db: Session) -> list[Incident]:
     """Closed is not the same as fixed.
 
-    A ticket marked DONE while its check is still failing is the most
+    An issue marked done while its check is still failing is the most
     dangerous state the system can be in: everyone believes it is handled and
     nothing is watching. Reopening is the one place the monitor overrides a
     human decision, and it says so in the comment rather than doing it
@@ -267,12 +363,7 @@ def reopen_closed_but_failing(db: Session) -> list[Incident]:
     """
     reopened: list[Incident] = []
     candidates = db.scalars(
-        select(Incident)
-        .join(models.Ticket, models.Ticket.incident_id == Incident.id)
-        .where(
-            Incident.state == IncidentState.CLEARED.value,
-            models.Ticket.status == TicketStatus.DONE.value,
-        )
+        select(Incident).where(Incident.state == IncidentState.CLEARED.value)
     ).all()
 
     for incident in candidates:
@@ -280,7 +371,7 @@ def reopen_closed_but_failing(db: Session) -> list[Incident]:
         # closure was premature; earlier ones are the failures it was closed
         # for. `id` breaks ties on `started_at` so the answer is stable -
         # this query decides whether to override a person's decision to close
-        # a ticket, and that must not come down to row order.
+        # an issue, and that must not come down to row order.
         query = select(models.CheckRun).where(models.CheckRun.check_id == incident.check_id)
         if incident.cleared_at is not None:
             query = query.where(models.CheckRun.started_at >= incident.cleared_at)
@@ -295,13 +386,16 @@ def reopen_closed_but_failing(db: Session) -> list[Incident]:
             continue
 
         body = (
-            f"Reopening: the ticket is closed but {incident.check.name} is still failing as "
-            f"of the run at {latest.started_at:%Y-%m-%d %H:%M} UTC ({latest.message or 'no message'})."
+            f"Reopening: this was closed but {incident.check.name} is still failing as "
+            f"of the run at {latest.started_at:%Y-%m-%d %H:%M} UTC "
+            f"({latest.message or 'no message'})."
         )
         lifecycle.reopen_incident(db, incident, body, check_run_id=latest.id)
-        if incident.ticket:
-            incident.ticket.status = TicketStatus.TODO.value
-            ticket_backend().comment(db, incident.ticket, body)
+        backend = ticket_backend()
+        if backend is not None and incident.ticket_key:
+            backend.transition(incident, done=False, comment=body)
+            incident.ticket_status = settings.jira_reopen_status
+            incident.ticket_moved_at = lifecycle.utcnow()
         reopened.append(incident)
 
     if reopened:

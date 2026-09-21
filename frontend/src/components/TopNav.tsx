@@ -4,7 +4,7 @@ import { Link, matchPath, useLocation } from "react-router-dom";
  * Three modes, because the useful actions differ by altitude.
  *
  * Workspace level lists projects. Inside a
- * project the sections become its databases and tickets, and the primary action
+ * project the sections become its databases and incidents, and the primary action
  * is "Add database". Inside a database it becomes that database's checks, and
  * the primary action is "New check" - which only makes sense once there is a
  * database to run it against.
@@ -34,7 +34,8 @@ export function TopNav() {
     : inProject
       ? [
           { href: base, label: "Databases", exact: true },
-          { href: `${base}/tickets`, label: "Tickets" },
+          { href: `${base}/incidents`, label: "Incidents" },
+          { href: `${base}/changes`, label: "Changes" },
           { href: `${base}/connections`, label: "Connections" },
           { href: `${base}/settings`, label: "Settings" },
         ]

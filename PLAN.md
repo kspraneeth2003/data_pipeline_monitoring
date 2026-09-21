@@ -42,7 +42,7 @@ Build a web application that autonomously:
 **Ticketing**
 - FR8: On failure (or on RCA completion), auto-create a Jira ticket via Jira REST API with: title, description (RCA summary + evidence + check metadata + links to Snowflake query history / commit), severity/priority mapped from check tolerance, labels/component.
 - FR9: Derive assignee from `git blame` on the most recently changed lines/files most likely responsible (per RCA's identified root-cause artifact); map git author email → Jira account ID (via Jira user lookup); fallback to a configured default owner/team if no confident mapping.
-- FR10: Avoid duplicate tickets for repeated failures of the same check within a cooldown window (link to existing ticket / comment instead).
+- FR10: Avoid duplicate tickets for repeated failures of the same check within a cooldown window (link to existing ticket / comment instead). **Done** - one Jira issue per incident; repeated failures comment on it.
 
 **Extensibility**
 - FR11: Connector interface abstracts source access (query metadata, run comparison query, fetch schema) so Snowflake and RDS (Postgres/MySQL) implement the same interface.

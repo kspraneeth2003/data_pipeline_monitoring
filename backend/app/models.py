@@ -34,10 +34,11 @@ class RunStatus(str, enum.Enum):
     ERROR = "ERROR"
 
 
-class TicketStatus(str, enum.Enum):
-    TODO = "TODO"
-    IN_PROGRESS = "IN_PROGRESS"
-    DONE = "DONE"
+class IncidentSeverity(str, enum.Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
 
 
 class IncidentState(str, enum.Enum):
@@ -83,13 +84,6 @@ class CheckOrigin(str, enum.Enum):
     DERIVED = "DERIVED"
     AGENT = "AGENT"
     HUMAN = "HUMAN"
-
-
-class TicketPriority(str, enum.Enum):
-    LOW = "LOW"
-    MEDIUM = "MEDIUM"
-    HIGH = "HIGH"
-    CRITICAL = "CRITICAL"
 
 
 class Project(Base):
@@ -271,9 +265,6 @@ class CheckRun(Base):
 
     check: Mapped["Check"] = relationship(back_populates="runs")
     rca: Mapped["RcaResult | None"] = relationship(back_populates="check_run", cascade="all, delete-orphan", uselist=False)
-    # No cascade delete: the ticket belongs to the incident now, and deleting
-    # the run that happened to open it must not take the ticket with it.
-    ticket: Mapped["Ticket | None"] = relationship(back_populates="check_run", uselist=False)
 
 
 class RcaResult(Base):
@@ -379,7 +370,7 @@ class Incident(Base):
     check_id: Mapped[str] = mapped_column(ForeignKey("checks.id", ondelete="CASCADE"), index=True)
 
     state: Mapped[str] = mapped_column(String, default=IncidentState.OPEN.value, index=True)
-    severity: Mapped[str] = mapped_column(String, default=TicketPriority.MEDIUM.value)
+    severity: Mapped[str] = mapped_column(String, default=IncidentSeverity.MEDIUM.value)
     title: Mapped[str] = mapped_column(Text)
     # The agent's current understanding, rewritten as the incident develops.
     # Distinct from the RCA on any one run: that is a snapshot, this is the
@@ -417,14 +408,39 @@ class Incident(Base):
     # know which kind of judgement they are looking at.
     triage_source: Mapped[str] = mapped_column(String, default="rule")
 
+    # --- The Jira issue, which lives in Jira ---------------------------
+    #
+    # This app holds a reference and a cached view of it, never a copy. The
+    # issue is Jira's: its status, its assignee and its comments are edited
+    # by people there, and anything stored here is stale the moment they do.
+    #
+    # The cache exists for exactly one reason. "Nobody has responded to this"
+    # is the judgement that makes escalation worth having, and answering it
+    # needs to know whether the issue has moved - which is a question only
+    # Jira can answer. Re-reading it on every decision would put a network
+    # call in the path of every sweep, so the sweep refreshes it once and
+    # the rest of the pass reads the cache.
+    #
+    # Null ticket_key means no issue exists: Jira is unconfigured, or filing
+    # failed. The incident is still fully tracked here either way.
+    ticket_key: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    ticket_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Jira's own status name ("To Do", "In Progress", a custom one). Free
+    # text on purpose - workflows are per-project and an enum here would be
+    # wrong on the first site that renamed a column.
+    ticket_status: Mapped[str | None] = mapped_column(String, nullable=True)
+    ticket_assignee: Mapped[str | None] = mapped_column(String, nullable=True)
+    # When the cache was last refreshed, and when the status last actually
+    # changed. The second is what "untouched for three days" is measured
+    # from - `updated_at` on the incident moves for our own writes too.
+    ticket_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ticket_moved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     check: Mapped["Check"] = relationship(back_populates="incidents")
     events: Mapped[list["IncidentEvent"]] = relationship(
         back_populates="incident",
         cascade="all, delete-orphan",
         order_by="IncidentEvent.created_at",
-    )
-    ticket: Mapped["Ticket | None"] = relationship(
-        back_populates="incident", cascade="all, delete-orphan", uselist=False
     )
 
     @property
@@ -462,38 +478,3 @@ class IncidentEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     incident: Mapped["Incident"] = relationship(back_populates="events")
-
-
-class Ticket(Base):
-    __tablename__ = "tickets"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
-    # The incident is the ticket's subject. `check_run_id` is kept as the run
-    # that opened it - useful provenance, no longer the identity - and is
-    # nullable because an incident can outlive the run that started it.
-    incident_id: Mapped[str | None] = mapped_column(
-        ForeignKey("incidents.id", ondelete="CASCADE"), unique=True, nullable=True
-    )
-    check_run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("check_runs.id", ondelete="SET NULL"), nullable=True
-    )
-
-    key: Mapped[str] = mapped_column(String, unique=True)
-    title: Mapped[str] = mapped_column(Text)
-    description: Mapped[str] = mapped_column(Text)
-    priority: Mapped[str] = mapped_column(String, default=TicketPriority.MEDIUM.value)
-    assignee: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, default=TicketStatus.TODO.value)
-
-    # Set when the ticket lives in a real tracker rather than the in-app
-    # board. `external_key` is the tracker's own key (DATA-417), which is not
-    # the same as `key` - that one is ours and stays stable even if the
-    # tracker is swapped.
-    external_key: Mapped[str | None] = mapped_column(String, nullable=True)
-    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    incident: Mapped["Incident | None"] = relationship(back_populates="ticket")
-    check_run: Mapped["CheckRun | None"] = relationship(back_populates="ticket")

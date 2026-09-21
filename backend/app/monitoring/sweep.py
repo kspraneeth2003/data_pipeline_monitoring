@@ -4,10 +4,12 @@ Incident bookkeeping happens the moment a check runs (`checks/runner.py` ->
 `triage`), because a state transition should not wait for a timer. What lands
 here is everything that cannot be decided from a single run:
 
+* **Jira sync.** What the issue's status and assignee are now, which only
+  Jira knows.
 * **Escalation.** "Nobody has responded" is a statement about elapsed time and
-  an unchanged ticket, which no individual run can observe.
-* **Reopening.** A ticket closed while its check still fails is only visible
-  by comparing the tracker against the runs.
+  an unchanged issue, which no individual run can observe.
+* **Reopening.** An issue closed while its check still fails is only visible
+  by comparing the runs against the clear.
 * **Agent judgement.** Correlation, warning severity, and written commentary
   need the incident's whole history and its siblings.
 
@@ -42,9 +44,24 @@ def active_incidents(db: Session) -> list[Incident]:
 def run_sweep(db: Session) -> dict:
     """One pass. Returns what it did, so the scheduler can log it and the
     API can show the monitor is alive rather than merely configured."""
-    result = {"reopened": 0, "escalated": 0, "agent_actions": 0, "agent_error": None}
+    result = {
+        "synced": 0,
+        "reopened": 0,
+        "escalated": 0,
+        "agent_actions": 0,
+        "agent_error": None,
+    }
 
-    # Deterministic passes first. Each commits independently: a failure in
+    # Jira first, because both passes below ask whether anyone has responded
+    # and that is a fact about Jira rather than about this database. One
+    # refresh per sweep keeps the network call out of every decision.
+    try:
+        result["synced"] = triage.sync_ticket_state(db, active_incidents(db))
+    except Exception:
+        logger.exception("Jira sync failed; escalation will use the cached state")
+        db.rollback()
+
+    # Deterministic passes next. Each commits independently: a failure in
     # one must not roll back the work of another, since they are unrelated
     # decisions that happen to share a timer.
     try:

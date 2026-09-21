@@ -1,18 +1,19 @@
-"""Jira Cloud REST v3, as a ticket backend.
+"""Jira Cloud REST v3 - the only place tickets live.
 
-Configured entirely from `backend/.env` (`JIRA_BASE_URL`, `JIRA_EMAIL`,
-`JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`). With any of those unset the registry
-never constructs this class, and the board backend is used instead - so the
-app runs identically with and without a Jira to talk to.
+Configured from `backend/.env` (`JIRA_BASE_URL`, `JIRA_EMAIL`,
+`JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`). With any of those unset there is no
+tracker at all: incidents are still opened, tracked, escalated and cleared
+here, they simply have no issue attached. That is a supported way to run
+this, and `GET /api/monitor/status` says so plainly.
 
 Two design points worth stating, because both look like missing features:
 
 **Nothing raises.** A Jira that is down, rate-limited or misconfigured must
 not cost the incident record. Every call catches, logs, and returns a value
-saying the external copy did not happen; the `IncidentEvent` in Postgres has
-already been written by the caller and remains the source of truth. The
-alternative - letting an HTTP error escape into the sweep - would mean one
-unreachable tracker stops monitoring for every project.
+saying the external write did not happen; the `IncidentEvent` in Postgres is
+already written by the caller and remains the source of truth. Letting an
+HTTP error escape into the sweep would mean one unreachable tracker stops
+monitoring for every project.
 
 **The description is Atlassian Document Format, not text.** v3 rejects a
 plain string on `description`, which is the single most common way a first
@@ -24,11 +25,9 @@ import logging
 
 import httpx
 
-from sqlalchemy.orm import Session
-
 from app import models
 from app.config import settings
-from app.tickets.base import TicketContent, TicketRef
+from app.tickets.base import TicketContent, TicketRef, TicketState
 
 logger = logging.getLogger("dpm.tickets.jira")
 
@@ -36,8 +35,8 @@ TIMEOUT_SECONDS = 15
 
 # Our severities -> Jira's default priority scheme. A site that renamed these
 # will not match, which is why an unknown name is dropped rather than sent:
-# Jira rejects the whole issue for one bad priority, and a ticket filed at the
-# wrong priority is worth far more than no ticket at all.
+# Jira rejects the whole issue for one bad priority, and an issue filed at
+# the wrong priority is worth far more than no issue at all.
 PRIORITY_MAP = {
     "CRITICAL": "Highest",
     "HIGH": "High",
@@ -73,9 +72,12 @@ class JiraBackend:
             "Content-Type": "application/json",
         }
 
-    def _post(self, path: str, payload: dict) -> dict | None:
+    # --- transport ----------------------------------------------------
+
+    def _request(self, method: str, path: str, payload: dict | None = None) -> dict | None:
         try:
-            response = httpx.post(
+            response = httpx.request(
+                method,
                 f"{self.base_url}{path}",
                 json=payload,
                 headers=self._headers,
@@ -87,15 +89,19 @@ class JiraBackend:
             # Jira puts the actual reason in the body; the status line alone
             # ("400 Bad Request") is useless for diagnosing a field mapping.
             logger.warning(
-                "Jira %s failed: %s %s", path, error.response.status_code, error.response.text[:400]
+                "Jira %s %s failed: %s %s",
+                method,
+                path,
+                error.response.status_code,
+                error.response.text[:400],
             )
         except httpx.HTTPError as error:
-            logger.warning("Jira %s unreachable: %s", path, error)
+            logger.warning("Jira %s %s unreachable: %s", method, path, error)
         return None
 
-    def create(
-        self, db: Session, incident: models.Incident, content: TicketContent
-    ) -> TicketRef:
+    # --- operations ---------------------------------------------------
+
+    def create(self, incident: models.Incident, content: TicketContent) -> TicketRef | None:
         fields: dict = {
             "project": {"key": self.project_key},
             "summary": content.title[:255],
@@ -106,72 +112,98 @@ class JiraBackend:
         if priority := PRIORITY_MAP.get(content.priority):
             fields["priority"] = {"name": priority}
 
-        created = self._post("/rest/api/3/issue", {"fields": fields})
-        if not created:
-            # Fall back to a board ticket rather than losing the incident's
-            # only human-visible artifact.
-            from app.tickets.board import next_ticket_key
-
-            logger.warning("Filing incident %s on the local board instead", incident.id)
-            return TicketRef(key=next_ticket_key(db))
-
-        key = created.get("key", "")
-        return TicketRef(
-            key=key,
-            external_key=key,
-            external_url=f"{self.base_url}/browse/{key}" if key else None,
-        )
-
-    def comment(self, db: Session, ticket: models.Ticket, body: str) -> str | None:
-        if not ticket.external_key:
+        created = self._request("POST", "/rest/api/3/issue", {"fields": fields})
+        if not created or not created.get("key"):
+            # The incident stays open and unticketed. The next sweep tries
+            # again, which is why this returns None rather than inventing a
+            # local key that would never reconcile with Jira.
+            logger.warning("Could not file a Jira issue for incident %s", incident.id)
             return None
-        created = self._post(
-            f"/rest/api/3/issue/{ticket.external_key}/comment", {"body": as_adf(body)}
+
+        key = created["key"]
+        return TicketRef(key=key, url=f"{self.base_url}/browse/{key}")
+
+    def comment(self, incident: models.Incident, body: str) -> bool:
+        if not incident.ticket_key:
+            return False
+        created = self._request(
+            "POST", f"/rest/api/3/issue/{incident.ticket_key}/comment", {"body": as_adf(body)}
         )
-        return created.get("id") if created else None
+        return created is not None
+
+    def fetch_state(self, incident: models.Incident) -> TicketState | None:
+        """Read back what Jira currently says about the issue.
+
+        This is what makes "nobody has responded" answerable. Only the two
+        fields that decide it are requested, so the sweep's per-incident cost
+        stays one small GET.
+        """
+        if not incident.ticket_key:
+            return None
+        issue = self._request(
+            "GET", f"/rest/api/3/issue/{incident.ticket_key}?fields=status,assignee"
+        )
+        if not issue:
+            return None
+        fields = issue.get("fields") or {}
+        status = ((fields.get("status") or {}).get("name")) or "Unknown"
+        assignee = (fields.get("assignee") or {}).get("displayName")
+        return TicketState(
+            key=incident.ticket_key,
+            status=status,
+            assignee=assignee,
+            url=f"{self.base_url}/browse/{incident.ticket_key}",
+        )
+
+    def set_priority(self, incident: models.Incident, priority: str) -> bool:
+        name = PRIORITY_MAP.get(priority)
+        if not incident.ticket_key or not name:
+            return False
+        updated = self._request(
+            "PUT",
+            f"/rest/api/3/issue/{incident.ticket_key}",
+            {"fields": {"priority": {"name": name}}},
+        )
+        return updated is not None
 
     def transition(
-        self, db: Session, ticket: models.Ticket, status: str, comment: str | None = None
-    ) -> None:
-        ticket.status = status
+        self, incident: models.Incident, done: bool, comment: str | None = None
+    ) -> bool:
         if comment:
-            self.comment(db, ticket, comment)
-        if not ticket.external_key:
-            return
+            self.comment(incident, comment)
+        if not incident.ticket_key:
+            return False
 
-        # Transition ids are per-workflow, so the target has to be looked up
-        # by name rather than hardcoded - the same board renamed "Done" to
-        # "Complete" and a hardcoded id would silently stop closing tickets.
-        target = settings.jira_done_status if status == "DONE" else None
+        target = settings.jira_done_status if done else settings.jira_reopen_status
         if not target:
-            return
-        try:
-            response = httpx.get(
-                f"{self.base_url}/rest/api/3/issue/{ticket.external_key}/transitions",
-                headers=self._headers,
-                timeout=TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            transitions = response.json().get("transitions", [])
-        except httpx.HTTPError as error:
-            logger.warning("Could not read Jira transitions: %s", error)
-            return
+            return False
+
+        # Transition ids are per-workflow, so the target is looked up by name
+        # rather than hardcoded - a board that renamed "Done" to "Complete"
+        # would otherwise silently stop closing issues.
+        listing = self._request(
+            "GET", f"/rest/api/3/issue/{incident.ticket_key}/transitions"
+        )
+        if not listing:
+            return False
+        transitions = listing.get("transitions", [])
 
         match = next(
-            (t for t in transitions if t.get("to", {}).get("name", "").lower() == target.lower()),
+            (t for t in transitions if (t.get("to") or {}).get("name", "").lower() == target.lower()),
             None,
-        ) or next(
-            (t for t in transitions if t.get("name", "").lower() == target.lower()), None
-        )
+        ) or next((t for t in transitions if t.get("name", "").lower() == target.lower()), None)
         if not match:
             logger.warning(
                 "No Jira transition to %r on %s (available: %s)",
                 target,
-                ticket.external_key,
+                incident.ticket_key,
                 [t.get("name") for t in transitions],
             )
-            return
-        self._post(
-            f"/rest/api/3/issue/{ticket.external_key}/transitions",
+            return False
+
+        result = self._request(
+            "POST",
+            f"/rest/api/3/issue/{incident.ticket_key}/transitions",
             {"transition": {"id": match["id"]}},
         )
+        return result is not None

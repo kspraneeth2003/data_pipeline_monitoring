@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { api, type Incident, type IncidentDetail } from "../lib/api";
@@ -83,7 +83,8 @@ export function ProjectIncidents() {
       setNote(
         result.agent_error
           ? `Rules ran; the agent failed: ${result.agent_error}`
-          : `Reopened ${result.reopened}, escalated ${result.escalated}, agent acted on ${result.agent_actions}.`,
+          : `Synced ${result.synced} Jira issue(s), reopened ${result.reopened}, ` +
+            `escalated ${result.escalated}, agent acted on ${result.agent_actions}.`,
       );
       load();
     } catch (error) {
@@ -107,7 +108,8 @@ export function ProjectIncidents() {
         <div>
           <h1 className="text-xl font-semibold text-foreground">Incidents</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            One per problem, across every run it takes to fix.
+            One per problem, across every run it takes to fix. Issues are filed
+            and commented in Jira.
           </p>
         </div>
         <button
@@ -178,14 +180,28 @@ export function ProjectIncidents() {
                 </div>
                 <div className="shrink-0 text-right">
                   <p className="text-xs font-medium text-foreground">{incident.severity}</p>
-                  {incident.ticket && (
-                    <Link
-                      to={`/projects/${slug}/tickets`}
+                  {incident.ticket_key ? (
+                    // Straight out to Jira. The issue lives there, so there is
+                    // nowhere in this app to send someone instead.
+                    <a
+                      href={incident.ticket_url ?? "#"}
+                      target="_blank"
+                      rel="noreferrer"
                       onClick={(e) => e.stopPropagation()}
                       className="text-xs text-accent hover:underline"
                     >
-                      {incident.ticket.key}
-                    </Link>
+                      {incident.ticket_key}
+                    </a>
+                  ) : (
+                    <span
+                      className="text-xs text-zinc-500"
+                      title="No Jira issue: either Jira is not configured, or filing it failed and the next sweep will retry."
+                    >
+                      no issue
+                    </span>
+                  )}
+                  {incident.ticket_status && (
+                    <p className="text-xs text-zinc-500">{incident.ticket_status}</p>
                   )}
                 </div>
               </button>

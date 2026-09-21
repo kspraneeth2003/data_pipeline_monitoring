@@ -9,7 +9,7 @@ The app was **fully rewritten** from Next.js/Prisma/TypeScript to **Vite+React (
 Functional parity with the previous Next.js app is verified working end-to-end:
 - **M0/M1**: Check engine + dashboard
 - **M2**: RCA agent, now built as a **LangGraph** `StateGraph` (gather evidence -> try LLM synthesis -> fall back to heuristic on failure), using a custom LangChain chat model that shells out to the Claude Code CLI - still no `ANTHROPIC_API_KEY` needed
-- **M3**: Ticketing, simulated as an in-app Kanban board
+- **M3**: Ticketing, in Jira. This app has no ticket board of its own
 - Account-agnostic Snowflake connectors (encrypted credentials, connect any account via the UI)
 - **Repository ingestion**: a project is now started by pasting the git URL of the repo that defines
   the pipeline. The DDL is parsed, checks are derived from it, an agent adds the ones rules cannot
@@ -27,7 +27,14 @@ picking this up:
    against what is there. Writes reviewable proposals, never silent edits.
 3. **The reporting agent** (`monitoring/`) - runs continuously, owns the
    incident lifecycle, and decides what to say: comment, escalate, warn,
-   suppress, or nothing.
+   suppress, or nothing. It says it in Jira.
+
+**There is no ticket board in this app.** An `Incident` is the record of what
+went wrong and what was said about it; the Jira issue is that incident's
+external face. This app stores a reference to the issue and a cached view of
+its status, refreshed once per sweep - never a copy. With Jira unconfigured
+there is no tracker at all, and incidents are still opened, escalated and
+cleared here.
 
 Both agents are optional. With `AGENT_MODEL` unset each falls back to a rule
 path that still does the mechanical work - incidents open, dedup, escalate
@@ -46,7 +53,7 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     db.py                 SQLAlchemy engine/session
     models.py             ORM models: Project (+ repo_url/ref/commit/path), Database (+ repo_paths),
                             Connector (project-owned), Check (+ provenance), CheckRun, RcaResult,
-                            Incident, IncidentEvent, CheckRevision, Ticket (-> incident)
+                            Incident (+ cached Jira reference), IncidentEvent, CheckRevision
     schemas.py            Pydantic request/response schemas
     crypto.py             AES-256-GCM encrypt/decrypt for connector secrets
     connectors/
@@ -83,7 +90,7 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     monitoring/           THE REPORTING AGENT - incidents, comments, escalation
       incidents.py        Lifecycle primitives with no judgement in them (open/clear/reopen/suppress)
       triage.py           The deterministic floor: open on failure, comment on change, clear on two
-                            consecutive passes, escalate an untouched ticket, reopen a closed-but-
+                            consecutive passes, escalate an untouched issue, reopen a closed-but-
                             failing one. This is the whole monitor when no model is configured
       tools.py            Read-only views the agent investigates through (history, trend, RCA, siblings)
       prompts.py          The reporting agent's operating manual - its specification, kept reviewable
@@ -99,12 +106,13 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
                             edits a check. _may_auto_apply is the consent boundary, in code
       service.py          detect -> re-derive -> reconcile, with a no-model rule path
     tickets/
-      base.py             TicketBackend protocol (create / comment / transition)
-      board.py            The in-app Kanban board
-      jira.py             Jira Cloud REST v3. Never raises; renders ADF, not plain text
-      registry.py         Picks one from configuration, the way connectors/registry.py does
+      base.py             TicketBackend protocol: create / comment / transition /
+                            fetch_state / set_priority. fetch_state is not incidental -
+                            "has anyone responded" is unanswerable without asking Jira
+      jira.py             Jira Cloud REST v3, the only tracker. Never raises; renders ADF
+      registry.py         Returns the backend, or None when Jira is unconfigured
     scheduler.py           APScheduler: per-check cron jobs, the monitor sweep, the maintenance scan
-    routers/               projects.py, checks.py, connectors.py, tickets.py, ingest.py,
+    routers/               projects.py, checks.py, connectors.py, ingest.py,
                             monitoring.py (incidents, revisions, manual triggers)
     seed.py                Seeds 1 connector + 4 example checks (`python -m app.seed`)
   alembic/                 Migrations (env.py wired to app.db.Base.metadata + app.config.settings)
@@ -114,12 +122,12 @@ frontend/                 Vite + React + TypeScript
     lib/api.ts             Typed fetch client for the FastAPI backend (VITE_API_URL, default localhost:8000)
     lib/check-types.ts      UI metadata for check-type form fields (keep in sync with backend/app/checks/config_schemas.py)
     components/             TopNav, Breadcrumbs, HealthPill, StatusBadge, RunNowButton, EnabledToggle,
-                             DeleteButton, CheckForm, SnowflakeCredentialFields, TicketBoard
+                             DeleteButton, CheckForm, SnowflakeCredentialFields
     lib/time.ts             Parses the API's naive-UTC timestamps. Use this, never bare `new Date(iso)` -
                              a bare parse reads them as local time and shifts every timestamp.
     pages/                  Projects (home), NewProject (repo-driven setup wizard),
                              NewProjectManual (the old name/connect/databases wizard), ProjectOverview,
-                             ProjectTickets, ProjectIncidents, ProjectRevisions, ProjectConnections,
+                             ProjectIncidents, ProjectRevisions, ProjectConnections,
                              ProjectSettings, NewDatabase, DatabaseChecks, DatabaseSettings,
                              CheckDetail, NewCheck, EditCheck
     App.tsx                 React Router routes
@@ -139,8 +147,8 @@ not a database - it spans the databases that together serve one domain.
 /                                              Projects, ranked worst-health first
 /projects/new                                  Create
 /projects/:slug                                Databases in this project, with health
-/projects/:slug/tickets                        Tickets across the project
 /projects/:slug/incidents                      Incidents, with the agent's comment stream
+                                                 (each links out to its Jira issue)
 /projects/:slug/changes                        Proposed check changes awaiting review
 /projects/:slug/settings                       Rename, connections in use, delete
 /projects/:slug/connections                    Connections owned by this project
@@ -179,7 +187,7 @@ gather_evidence -> synthesize_llm --[llm succeeded]--> END
 
 - `gather_evidence`: for each object implicated by the failed check (`extract_targets.py`), opens the check's Snowflake connector once and pulls `snowflake_context.py` (near-real-time metadata via `INFORMATION_SCHEMA`) + `git_context.py` (git log / `git log -S<keyword>` pickaxe search against the tracked files in `snowflake/`)
 - `synthesize_llm`: builds a prompt from that evidence and calls `ClaudeCliChatModel` (`llm.py`) - a `langchain_core.language_models.chat_models.BaseChatModel` subclass whose `_generate` shells out to `claude -p --restricted <prompt>` instead of hitting the Anthropic API. Set `RCA_LLM_COMMAND` in `backend/.env` to override the binary.
-- If that raises (CLI missing, timeout, bad JSON), the conditional edge routes to `synthesize_heuristic` (`heuristic.py`) - the same deterministic fallback logic as before, so RCA never blocks ticket creation.
+- If that raises (CLI missing, timeout, bad JSON), the conditional edge routes to `synthesize_heuristic` (`heuristic.py`) - the same deterministic fallback logic as before, so RCA never blocks incident reporting.
 - `generate_rca(...)` in `graph.py` is the single entry point `runner.py` calls.
 
 ### The three components, and which is an agent
@@ -211,8 +219,12 @@ second observation of the same problem - which is why every failed run filed a
 fresh ticket and FR10 stayed open. The local database had 381 tickets across 6
 checks, 209 of them for one continuously-failing inventory check.
 
+The `tickets` table has since been dropped entirely: issues live in Jira and
+nowhere else.
+
 An `Incident` is one problem across however many runs it takes to fix.
-`IncidentEvent` is its comment stream. Tickets hang off the incident.
+`IncidentEvent` is its comment stream, mirrored to the incident's Jira
+issue when there is one.
 
 `WARNING` is an incident state with no matching run status, deliberately: a
 check that is passing but degrading is not a failure, and teaching a
@@ -221,7 +233,8 @@ the one place that must stay predictable.
 
 Two rules are worth knowing before tuning them. An incident clears after
 **two** consecutive passes, because one green run of a flapping check is not a
-recovery. And escalation skips any ticket somebody has moved off `TODO` - the
+recovery. And escalation skips any issue somebody has moved off an untouched status,
+or assigned - the
 signal is absence of response, not slowness.
 
 ### What the agents may and may not do
@@ -231,7 +244,7 @@ in the prompts, because a prompt is guidance a model can misread.
 
 The reporting agent cannot `CLEAR` an incident. Whether a problem is over is a
 question about the data, answered by the check passing; a model reasoning its
-way to "this looks resolved" would close tickets on pipelines that are still
+way to "this looks resolved" would close issues on pipelines that are still
 broken, and that failure is silent.
 
 The maintenance agent cannot touch a check whose `origin` is `HUMAN` or whose
@@ -264,15 +277,34 @@ model string rather than a bare "enabled", because a model that is set but
 unusable looks identical to "on" from anywhere else.
 
 Jira needs `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` and
-`JIRA_PROJECT_KEY` together; with any missing, tickets go to the in-app board
-and nothing else changes. See `backend/.env.example` for everything.
+`JIRA_PROJECT_KEY` together. With any missing there is no tracker: incidents
+are still opened, escalated and cleared, they simply have no issue attached,
+and `GET /api/monitor/status` reports `ticket_backend: null`. See
+`backend/.env.example` for everything.
 
-### Mock ticketing (`backend/app/tickets/board.py`)
+### Tickets live in Jira (`backend/app/tickets/`)
 
-`Ticket` rows with a `DPM-N` key, rendered as a 3-column Kanban board. Now one
-backend behind `tickets/base.TicketBackend`, interchangeable with Jira and
-selected by configuration - the agents know how to say "file this", "comment
-this", "close this" and nothing about where it lands.
+There is no board here. `JiraBackend` is the only implementation of
+`TicketBackend`, and `ticket_backend()` returns `None` when Jira is not
+configured - deliberately a null *value* rather than a null *object*, because
+a backend that accepts a comment and silently drops it is indistinguishable
+from one that works.
+
+The interface has five operations, and `fetch_state` is the one worth
+explaining. Escalation turns on "has anyone responded to this", which is a
+fact about Jira rather than about this database. The monitor sweep refreshes
+each active incident's status and assignee once, and the rest of the pass
+reads that cache - which keeps a network call out of every decision and keeps
+`ticket_moved_at` meaning *when the issue changed* rather than when we last
+wrote to our own row.
+
+Nothing in the Jira client raises. A tracker that is down costs the external
+copy of a comment, never the incident record. Descriptions are rendered as
+Atlassian Document Format; v3 rejects a plain string on `description`, which
+is the most common way a first Jira integration fails with an opaque 400.
+
+An incident whose filing failed carries no `ticket_key`, and the next failing
+run retries it, so the gap closes on its own.
 
 ### Account-agnostic Snowflake connectors
 
@@ -409,7 +441,7 @@ createdb dpm_dev                    # if it doesn't exist
 cd backend
 uv sync                             # installs into backend/.venv (Python 3.12, managed by uv)
 source .venv/bin/activate
-alembic upgrade head                # creates connectors/checks/check_runs/rca_results/tickets tables
+alembic upgrade head                # creates connectors/checks/check_runs/rca_results/incidents tables
 python -m app.seed                  # seeds 1 connector + 4 example checks
 uvicorn app.main:app --reload --port 8000
 
@@ -448,8 +480,8 @@ npm run dev
   on push. Turning them on is what makes it react to a commit immediately,
   and needs a publicly reachable endpoint - the first thing here that cannot
   run purely on localhost
-- Ticket key generation (`next_ticket_key` in `tickets/board.py`) is a best-effort count-based scheme, not a real sequence - fine at this volume, would race under real concurrency. A real tracker issues its own key and this goes unused
-- ~~No ticket de-duplication/cooldown (FR10)~~ **fixed** - incidents own tickets, so repeated failures comment instead of re-filing
+- ~~No ticket de-duplication/cooldown (FR10)~~ **fixed** - one Jira issue per incident, so repeated failures comment instead of re-filing
+- The Jira client is written and unit-tested against a fake, but has never been pointed at a real Jira. Field mappings most likely to need adjusting on first contact: the priority names in `PRIORITY_MAP`, `JIRA_ISSUE_TYPE`, and `JIRA_DONE_STATUS`/`JIRA_REOPEN_STATUS` if the workflow renames its columns
 - `CROSS_SOURCE_PARITY` checks get no RCA object-level evidence gathering yet (every other check type has it)
 - No auth/RBAC on the web app yet (PLAN.md FR16) - anyone with network access can hit the API routes
 - Connector secret encryption uses a single symmetric key in `.env`, not a real secrets manager/KMS

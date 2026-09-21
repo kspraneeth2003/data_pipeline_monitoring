@@ -1,42 +1,54 @@
-"""The ticket-tracker interface the monitoring agents write through.
+"""The issue-tracker interface the monitoring agent writes through.
 
-Same shape of decision as `connectors/registry.py`: the agents know how to
-say "file this", "comment this", "close this", and nothing about where it
-lands. A tracker is a backend, not a branch in the reporting logic.
+Tickets live in Jira. This app does not have a ticket board and does not
+store a copy of an issue - it holds an incident, and a reference to the Jira
+issue that incident produced. Anything Jira knows about that issue (its
+status, its assignee, its comment thread) belongs to Jira, and is read back
+rather than mirrored.
 
-Three operations, because they are the three the reporting agent actually
-performs. Notably absent is "update the description" - a tracker is an
-append-only conversation as far as this system is concerned, since rewriting
-history under a human who is reading it is how automation loses trust.
+Four operations, because they are the four the reporting agent performs:
+file one, comment on one, move one, and read back whether anyone has touched
+it. That last one is not incidental - "nobody has responded" is the judgement
+that makes escalation worth having, and it is unanswerable without asking
+Jira.
 
-Every method returns a `TicketRef` rather than raising on a tracker that is
-merely unreachable. Reporting must degrade the way RCA does: a broken Jira
-costs the external copy of the comment, never the incident record, which is
-held in Postgres either way.
+Nothing here raises. A tracker that is unreachable costs the external copy
+of a comment, never the incident record, which is in Postgres either way.
+Callers get a value saying what did or did not happen.
 """
 
 from dataclasses import dataclass
 from typing import Protocol
-
-from sqlalchemy.orm import Session
 
 from app import models
 
 
 @dataclass
 class TicketRef:
-    """Where a ticket ended up, as far as the tracker is concerned."""
+    """A filed issue, as the tracker returned it."""
 
     key: str
-    external_key: str | None = None
-    external_url: str | None = None
+    url: str | None = None
+
+
+@dataclass
+class TicketState:
+    """What the tracker currently says about an issue.
+
+    `status` is free text - Jira workflows are per-project and a site that
+    renamed "Done" to "Shipped" is not misconfigured, it is normal.
+    """
+
+    key: str
+    status: str
+    assignee: str | None = None
+    url: str | None = None
 
 
 @dataclass
 class TicketContent:
-    """What to file. Assembled by the caller so every backend renders the
-    same facts, and so the wording is decided in one place rather than drifting
-    between trackers."""
+    """What to file. Assembled by the caller so the wording is decided in one
+    place rather than drifting between trackers."""
 
     title: str
     description: str
@@ -46,22 +58,24 @@ class TicketContent:
 
 
 class TicketBackend(Protocol):
-    """Implemented by the in-app board and by Jira."""
-
     name: str
 
-    def create(
-        self, db: Session, incident: models.Incident, content: TicketContent
-    ) -> TicketRef:
-        """File a new ticket for an incident."""
+    def create(self, incident: models.Incident, content: TicketContent) -> TicketRef | None:
+        """File an issue for an incident. None if it could not be filed."""
         ...
 
-    def comment(self, db: Session, ticket: models.Ticket, body: str) -> str | None:
-        """Add a comment. Returns the tracker's id for it, when it has one."""
+    def comment(self, incident: models.Incident, body: str) -> bool:
+        """Add a comment to the incident's issue. False if it did not land."""
         ...
 
-    def transition(
-        self, db: Session, ticket: models.Ticket, status: str, comment: str | None = None
-    ) -> None:
-        """Move a ticket to a new status, optionally with a closing comment."""
+    def transition(self, incident: models.Incident, done: bool, comment: str | None = None) -> bool:
+        """Move the issue to the done or the open end of its workflow."""
+        ...
+
+    def fetch_state(self, incident: models.Incident) -> TicketState | None:
+        """Read the issue's current status and assignee. None if unreadable."""
+        ...
+
+    def set_priority(self, incident: models.Incident, priority: str) -> bool:
+        """Raise or lower the issue's priority."""
         ...

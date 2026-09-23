@@ -62,7 +62,7 @@ export function GitHubRepoPicker({
   if (loading) {
     return (
       <p className="flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2.5 text-sm text-zinc-500">
-        <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+        <span className="h-2 w-2 animate-pulse rounded-none bg-accent" />
         Loading your repositories…
       </p>
     );

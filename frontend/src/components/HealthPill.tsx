@@ -1,10 +1,10 @@
 import type { ProjectHealth } from "../lib/api";
 
 const STATUS_STYLES: Record<string, string> = {
-  PASSED: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400",
-  FAILED: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-400",
-  ERROR: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400",
-  NONE: "bg-zinc-100 text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400",
+  PASSED: "border-emerald-500/40 bg-emerald-950 text-emerald-400",
+  FAILED: "border-red-500/40 bg-red-950 text-red-400",
+  ERROR: "border-amber-500/40 bg-amber-950 text-amber-400",
+  NONE: "border-zinc-700 bg-zinc-900 text-zinc-400",
 };
 
 const DOT_STYLES: Record<string, string> = {
@@ -35,9 +35,9 @@ export function HealthPill({ health }: { health: ProjectHealth }) {
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_STYLES[key] ?? STATUS_STYLES.NONE}`}
+      className={`inline-flex items-center gap-1.5 border px-2 py-0.5 font-mono text-[11px] uppercase tracking-[0.1em] ${STATUS_STYLES[key] ?? STATUS_STYLES.NONE}`}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${DOT_STYLES[key] ?? DOT_STYLES.NONE}`} />
+      <span className={`h-1.5 w-1.5 ${DOT_STYLES[key] ?? DOT_STYLES.NONE}`} />
       {label}
     </span>
   );

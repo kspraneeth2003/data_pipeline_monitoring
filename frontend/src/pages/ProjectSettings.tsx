@@ -65,7 +65,7 @@ export function ProjectSettings() {
         items={[{ label: "Projects", to: "/" }, { label: project.name, to: `/projects/${slug}` }, { label: "Settings" }]}
       />
 
-      <h1 className="mb-6 text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
+      <h1 className="mb-6 text-2xl font-semibold tracking-[0.08em] text-foreground">Settings</h1>
 
       <form onSubmit={save} className="mb-8 space-y-5 rounded-xl border border-border bg-surface p-6">
         <div>
@@ -138,7 +138,7 @@ export function ProjectSettings() {
           <ul className="mt-3 space-y-1.5">
             {connectorsInUse.map((connector) => (
               <li key={connector.id} className="flex items-center gap-2 text-sm text-foreground">
-                <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                <span className="h-1.5 w-1.5 rounded-none bg-accent" />
                 {connector.name}
               </li>
             ))}

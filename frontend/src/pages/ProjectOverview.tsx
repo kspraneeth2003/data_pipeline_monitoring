@@ -46,7 +46,7 @@ export function ProjectOverview() {
 
       <header className="mb-8">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">{project.name}</h1>
+          <h1 className="text-2xl font-semibold tracking-[0.08em] text-foreground">{project.name}</h1>
           <HealthPill health={project.health} />
         </div>
         {project.description && <p className="mt-1 max-w-2xl text-sm text-zinc-500">{project.description}</p>}
@@ -71,14 +71,15 @@ export function ProjectOverview() {
           {
             label: "Needs attention",
             value: project.health.failing + project.health.erroring,
-            tone: "text-red-600 dark:text-red-400",
+            tone:
+              project.health.failing + project.health.erroring > 0 ? "text-red-400" : "text-foreground",
           },
           { label: "Open incidents", value: project.health.open_incidents, to: `/projects/${slug}/incidents` },
         ].map((stat) => {
           const body = (
             <>
               <dt className="text-xs font-medium uppercase tracking-wide text-zinc-500">{stat.label}</dt>
-              <dd className={`mt-1 text-2xl font-semibold ${stat.tone ?? "text-foreground"}`}>{stat.value}</dd>
+              <dd className={`mt-1 font-mono text-2xl font-semibold ${stat.tone ?? "text-foreground"}`}>{stat.value}</dd>
             </>
           );
           return stat.to ? (

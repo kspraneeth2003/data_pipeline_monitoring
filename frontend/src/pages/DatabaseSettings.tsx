@@ -53,7 +53,7 @@ export function DatabaseSettings() {
         ]}
       />
 
-      <h1 className="mb-6 text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
+      <h1 className="mb-6 text-2xl font-semibold tracking-[0.08em] text-foreground">Settings</h1>
 
       <form onSubmit={save} className="mb-8 space-y-5 rounded-xl border border-border bg-surface p-6">
         <div>

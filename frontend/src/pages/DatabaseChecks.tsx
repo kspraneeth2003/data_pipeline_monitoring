@@ -58,7 +58,7 @@ export function DatabaseChecks() {
       <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="font-mono text-2xl font-semibold tracking-tight text-foreground">{database.name}</h1>
+            <h1 className="font-mono text-2xl font-semibold tracking-[0.08em] text-foreground">{database.name}</h1>
             <HealthPill health={database.health} />
           </div>
           {database.description && <p className="mt-1 max-w-2xl text-sm text-zinc-500">{database.description}</p>}
@@ -67,7 +67,7 @@ export function DatabaseChecks() {
         <div className="flex shrink-0 gap-2">
           <Link
             to={`/projects/${slug}/databases/${dbSlug}/settings`}
-            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors dark:text-zinc-200 dark:hover:bg-zinc-800"
           >
             Settings
           </Link>
@@ -94,7 +94,7 @@ export function DatabaseChecks() {
           </Link>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-border bg-surface shadow-sm">
+        <div className="overflow-x-auto border border-border bg-surface shadow-sm">
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-zinc-50 dark:bg-white/[0.03]">
               <tr>
@@ -110,7 +110,7 @@ export function DatabaseChecks() {
               {checks.map((check) => {
                 const lastRun = check.runs[0];
                 return (
-                  <tr key={check.id} className="transition-colors hover:bg-zinc-50 dark:hover:bg-white/[0.02]">
+                  <tr key={check.id} className="transition-colors dark:hover:bg-white/[0.02]">
                     <td className="px-4 py-3">
                       <Link
                         to={`/projects/${slug}/databases/${dbSlug}/checks/${check.id}`}
@@ -127,14 +127,14 @@ export function DatabaseChecks() {
                         {check.type}
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-zinc-500 dark:text-zinc-400">{check.schedule}</td>
+                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-zinc-500 dark:text-zinc-400">{check.schedule}</td>
                     <td className="px-4 py-3 text-sm text-zinc-500 dark:text-zinc-400">
                       {formatDateTime(lastRun?.started_at)}
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={lastRun?.status ?? "NONE"} />
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="whitespace-nowrap px-4 py-3 text-right">
                       <RunNowButton checkId={check.id} onDone={reload} />
                     </td>
                   </tr>

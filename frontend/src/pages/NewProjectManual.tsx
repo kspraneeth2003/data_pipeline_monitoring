@@ -87,7 +87,7 @@ export function NewProjectManual() {
       <Breadcrumbs items={[{ label: "Projects", to: "/" }, { label: "New project", to: "/projects/new" }, { label: "Manual" }]} />
 
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">New project</h1>
+        <h1 className="text-2xl font-semibold tracking-[0.08em] text-foreground">New project</h1>
         <p className="mt-1 text-sm text-zinc-500">
           A project is a data product — the databases that together serve one domain.
         </p>
@@ -107,7 +107,7 @@ export function NewProjectManual() {
               }`}
             >
               <span
-                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${
+                className={`flex h-5 w-5 items-center justify-center rounded-none text-xs ${
                   step === s.n
                     ? "bg-accent text-accent-foreground"
                     : step > s.n

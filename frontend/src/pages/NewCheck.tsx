@@ -43,7 +43,7 @@ export function NewCheck() {
       />
 
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">New check</h1>
+        <h1 className="text-2xl font-semibold tracking-[0.08em] text-foreground">New check</h1>
         <p className="mt-1 text-sm text-zinc-500">
           This check will run against <span className="font-mono font-medium text-foreground">{database.name}</span>.
           It can still reference objects in sibling databases.

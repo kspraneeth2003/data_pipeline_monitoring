@@ -69,7 +69,7 @@ export function ProjectConnections() {
 
       <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Connections</h1>
+          <h1 className="text-2xl font-semibold tracking-[0.08em] text-foreground">Connections</h1>
           <p className="mt-1 max-w-xl text-sm text-zinc-500">
             How {project.name} reaches its databases. Connections belong to this project, so changing one here
             cannot affect another project.

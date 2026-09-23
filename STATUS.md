@@ -1,6 +1,7 @@
 # Project Status / Handoff Notes
 
-Read this first if you're picking this up in a new session. High-level requirements/plan/milestones live in `PLAN.md` - this file is "what's actually been built so far and how to pick it back up," updated as of **2026-09-21**.
+Read this first if you're picking this up in a new session. High-level requirements/plan/milestones live in `PLAN.md` - this file is "what's actually been built so far and how to pick it back up," updated as of **2026-09-23**.
+The *target* shape - what a project is, what a test is, the sections a user navigates - is in `FLOW.md`.
 
 ## TL;DR
 
@@ -43,6 +44,138 @@ and clear; drift is detected and proposed. The agents replace the
 
 **Not started**: M4 (RDS/cross-platform connector spike), M5 (hardening).
 
+## The target flow lives in `FLOW.md`
+
+`PLAN.md` holds requirements and `STATUS.md` holds what is built. `FLOW.md` is
+new and holds the third thing: the shape the product is being moved toward -
+what a project is (one repo, one warehouse connection, one source connection),
+what a test is, and the sections a user navigates between. Read it before
+adding a check type or changing setup, because several things in this file are
+deliberately on the way to something it describes rather than finished.
+
+Its §5 is an honest gap list against the tree, and its §6 the engineering
+order. Step 1 of that order has landed and is described below.
+
+### Every check owes its reader three things
+
+Description, the logic behind it, and the SQL it runs. This is now a property
+of every check type, not a convention:
+
+- `checks.description` - what it asserts, at most two lines
+- `checks.rationale` - **new column** (migration `c41d9be6a3f2`). The logic was
+  previously computed by ingestion and then buried inside the `derived_from`
+  JSON blob, so only derived checks had one and nothing ever rendered it. The
+  migration lifts those buried values into the column. `derived_from` keeps its
+  copy on purpose: that blob records what the proposal said at the time, and
+  rewriting it to match an editable column would destroy the one question it
+  answers.
+- `checks/sql.py` - `build_statements(type, config)`, the SQL, built on read
+  rather than stored.
+
+The load-bearing part is that `sql.py` is not documentation. `engine.py` calls
+the same builders to produce the queries it executes, so a rendered statement
+and an executed one cannot drift. `test_check_sql.py` asserts this mechanically
+- it greps the engine's source for re-inlined literal SQL - because a
+"documentation" copy would be wrong silently, and a reviewer approving one
+statement while the engine runs another is the failure worth preventing.
+
+The unit is a labelled statement rather than a string, since some checks issue
+two queries and a cross-source check issues them against different systems;
+presenting those as one script would read as a join that cannot exist.
+
+`try_build_statements` reports rather than raises, for list views: one
+unbuildable check must not blank the page, and its error belongs next to it as
+the finding it is - a check whose SQL cannot be built is one that will ERROR on
+its first run, which is worth learning during review.
+
+Surfaced at `GET /api/checks` and `/api/checks/{id}` (`statements`,
+`statements_error`), on ingest proposals at `GET /api/ingest/{job_id}`, and
+rendered by `frontend/src/components/CheckExplanation.tsx` on the check detail
+page and inline in the setup wizard's review step.
+
+### The loyalty test pipeline, and what it is for (`snowflake/dpm_src_loyalty/`)
+
+The original five databases are all one shape: an append-only VARIANT landing
+table, a stream, and a MERGE that collapses to entity state. A parity engine
+tested only against that shape is untested against most of what real pipelines
+do - which was not obvious until an FCC production repo was read as reference.
+
+`DPM_SRC_LOYALTY` / `DPM_LOYALTY_360` are new, and deliberately different:
+
+- **MERGE-on-PK bronze** (`MEMBERS_RAW`) - one row per entity, not an event log,
+  with CDC `OP` of I/U/D. Tombstones are real bronze rows, so the MERGE's
+  `OP <> 'D'` has to be lifted onto the source side of any parity check
+- **Composite snapshot grain** (`POINTS_SNAPSHOT_RAW`) - `(MEMBER_ID,
+  SNAPSHOT_DATE)`, where keying on the member alone reads every day after the
+  first as a duplicate
+- **An SCD2 dimension** (`SILVER.MEMBERS`) - the thing parity structurally
+  cannot check
+- **Aggregate gold** (`MEMBER_ENGAGEMENT`) - where key parity is meaningless and
+  reconciliation is the real check
+- **Loader cursor state** (`CURSOR_STATE`) - what makes a source-to-bronze
+  question answerable from inside the warehouse
+
+**Not deployed yet.** `snowflake/README.md` has the deploy order (child task
+before parent task, tables before streams before tasks) and the by-hand
+validation queries. `ioi/` picks them up on the next `dump_ddl.py` run after
+that; until then the dump skips them with a `!!` line.
+
+### SCD2 integrity (`backend/app/checks/scd2.py`)
+
+The first check in the advanced section. Four assertions, evaluated in one
+statement so they describe the same snapshot, but counted separately because
+they fail differently: no current row (the open step did not run), several
+current rows (the close step did not, and every join through the dimension now
+fans out and doubles its measures), overlapping windows (an as-of lookup is
+ambiguous), and gaps (a lost batch, where the fact silently drops out).
+
+Two things are load-bearing:
+
+**The natural key comes from the MERGE, not the table.** A table cannot
+distinguish `MEMBER_ID` from `MEMBER_KEY`, and choosing the surrogate would make
+every assertion trivially pass - one row per "key", no window to overlap. So no
+MERGE means no proposal at all, rather than a guess. A check that cannot fail is
+more dangerous than a missing one, because the coverage report then claims
+ground nothing covers.
+
+**The open-ended convention is configured, not inferred.** A sentinel
+(`9999-12-31`) and NULL are both in use and are not interchangeable; a table
+mixing them is precisely the fault being looked for, so inferring the convention
+from whichever appears more often would make the check agree with the corruption
+it exists to find.
+
+Parity against an SCD2 target is separately handled: `BronzeToSilverParityConfig`
+gained `silverFilter`, set to `IS_CURRENT = TRUE` when the target's column shape
+says type-2. Without it that check fails forever on correct data and gets muted.
+
+### Parser fixes driven by the FCC reference repo
+
+Each of these was a case of deriving *nothing* while looking like it had derived
+everything - a short, clean proposal list is indistinguishable from a simple
+pipeline. `FLOW.md` §7 has the full account.
+
+- `IS NOT DISTINCT FROM` in an ON clause now yields keys (`ddl_parser.
+  _normalize_key_equality`). It is the idiomatic join wherever keys are
+  nullable, and FCC uses it throughout; we split on `=` only, so their entire
+  silver layer would have produced zero parity checks
+- Metadata columns are matched by suffix on an underscore boundary, so
+  `ETL_LOADED_AT` is recognised as the settle column. Only compound candidates
+  qualify - allowing `_ID` to match made `MEMBER_ID` register as a sequence
+  column, a worse bug than the one being fixed
+- A MERGE whose source equals its target is no longer a pipeline hop. That is a
+  MERGE-on-PK loader writing its own landing table, and parity derived from it
+  compares a table to itself and passes unconditionally
+- Value columns are filtered against the target's real column list. An SCD2
+  close statement selects `CHANGED_AT` only to write it into `VALID_TO`, and
+  comparing against a column that does not exist is an ERROR run - which says
+  the check is wrong, not that the pipeline is
+
+Still open, and noted so it is not built the wrong way: FCC templates every
+object name (`BLINKFIRE_{{ env }}.SILVER.POSTS`). That is a **binding** problem,
+not a parsing one - we hold a live warehouse connection, so the environment
+should be discovered from the databases the credentials reach and confirmed by
+the user, rather than guessed at lexically.
+
 ## Architecture
 
 ```
@@ -52,7 +185,8 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     config.py             Settings (pydantic-settings, reads backend/.env)
     db.py                 SQLAlchemy engine/session
     models.py             ORM models: Project (+ repo_url/ref/commit/path), Database (+ repo_paths),
-                            Connector (project-owned), Check (+ provenance), CheckRun, RcaResult,
+                            Connector (project-owned), Check (+ provenance, + rationale), CheckRun,
+                            RcaResult,
                             Incident (+ cached Jira reference), IncidentEvent, CheckRevision
     schemas.py            Pydantic request/response schemas
     crypto.py             AES-256-GCM encrypt/decrypt for connector secrets
@@ -64,6 +198,9 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
     checks/
       config_schemas.py   Pydantic model per check type (mirrors the old Zod schemas)
       engine.py           run_check(...) -> CheckOutcome (PASSED/FAILED/ERROR + metrics)
+      sql.py              build_statements(type, config) -> the labelled SQL each check runs.
+                            engine.py calls the same builders, so what is rendered for review
+                            and what is executed cannot drift apart
       b2s_parity.py       BRONZE_TO_SILVER_PARITY: builds the single deterministic SQL statement
                             that proves silver is a deduplicated, lossless projection of bronze.
                             See the module docstring for why it is a FULL OUTER JOIN and not EXCEPT.

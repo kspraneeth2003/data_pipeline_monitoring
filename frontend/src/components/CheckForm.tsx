@@ -9,6 +9,7 @@ type InitialCheck = {
   id: string;
   name: string;
   description: string | null;
+  rationale: string | null;
   type: string;
   schedule: string;
   enabled: boolean;
@@ -41,6 +42,7 @@ export function CheckForm({
 
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [rationale, setRationale] = useState(initial?.rationale ?? "");
   const [type, setType] = useState(initial?.type ?? CHECK_TYPES[0].value);
   const [schedule, setSchedule] = useState(initial?.schedule ?? "*/5 * * * *");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
@@ -101,6 +103,7 @@ export function CheckForm({
       const payload = {
         name,
         description: description || undefined,
+        rationale: rationale || undefined,
         type,
         schedule,
         enabled,
@@ -128,8 +131,30 @@ export function CheckForm({
         </label>
 
         <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-          <span className="font-medium text-zinc-700 dark:text-zinc-300">Description (optional)</span>
-          <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} />
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">Description</span>
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className={inputClass}
+            placeholder="What this asserts, in at most two lines."
+          />
+        </label>
+
+        {/* The second of the three things a check owes its reader. Kept a
+            textarea rather than an input because a one-line box asks for a
+            label, and a label is what the name field already is. */}
+        <label className="flex flex-col gap-1 text-sm sm:col-span-2">
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">Logic</span>
+          <textarea
+            value={rationale}
+            onChange={(e) => setRationale(e.target.value)}
+            rows={3}
+            className={inputClass}
+            placeholder="Which invariant this relies on, where it comes from, and what a failure would mean."
+          />
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            Why this check is worth running. A failing check without this is a red square nobody can act on.
+          </span>
         </label>
 
         <label className="flex flex-col gap-1 text-sm">

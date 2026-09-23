@@ -28,6 +28,7 @@ from app.connectors.security import encrypt_config_secrets
 from app.connectors.snowflake_connector import test_snowflake_connection
 from app.db import get_db
 from app.config import settings
+from app.checks.sql import try_build_statements
 from app.ingest import github, jobs
 from app.ingest.repo import RepoError, normalize_repo_url
 from app.routers.projects import (
@@ -55,12 +56,31 @@ def start_ingestion(payload: schemas.RepoIngestRequest, db: Session = Depends(ge
     return job
 
 
+def _attach_statements(job: dict) -> dict:
+    """Give each proposal the SQL it would run, for the review step.
+
+    Done on read rather than during analysis so the graph stays about deriving
+    proposals, and so a builder change takes effect on an already-cached job
+    rather than needing a re-clone.
+    """
+    analysis = job.get("analysis")
+    if not analysis:
+        return job
+    for proposed in analysis.get("checks", []):
+        statements, error = try_build_statements(proposed["type"], proposed["config"])
+        proposed["statements"] = [
+            {"label": s.label, "sql": s.sql, "connection": s.connection} for s in statements
+        ]
+        proposed["statements_error"] = error
+    return job
+
+
 @router.get("/{job_id}", response_model=schemas.RepoIngestJobOut)
 def get_ingestion(job_id: str):
     job = jobs.get_job(job_id)
     if not job:
         raise HTTPException(404, "That analysis has expired - start it again.")
-    return job
+    return _attach_statements(job)
 
 
 @router.delete("/{job_id}", status_code=204)
@@ -146,6 +166,10 @@ def create_project_from_analysis(
                 connector_id=connector.id,
                 name=proposed["name"],
                 description=proposed["description"],
+                # Kept as a column of its own as well as inside `derived_from`:
+                # the blob records what the proposal said, the column is the
+                # live explanation a reader sees and an editor may correct.
+                rationale=proposed["rationale"],
                 type=proposed["type"],
                 schedule=proposed["schedule"],
                 config=proposed["config"],

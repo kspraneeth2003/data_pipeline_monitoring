@@ -33,7 +33,12 @@ LANDING_TABLE_SUFFIXES = ("_RAW", "_LANDING", "_STAGE")
 # Column names that conventionally carry the load/update time.
 LOADED_AT_COLUMNS = ("LOADED_AT", "INGESTED_AT", "LANDED_AT", "_LOADED_AT", "LOAD_TS")
 UPDATED_AT_COLUMNS = ("UPDATED_AT", "MODIFIED_AT", "LAST_UPDATED", "REFRESHED_AT")
-SEQUENCE_COLUMNS = ("RECORD_ID", "SEQ_ID", "INGEST_ID", "_ID")
+# Monotonic per-row ordering columns. `SEQ_NO`/`CHANGE_SEQ` are the CDC
+# spellings: a source that emits change events numbers them, and that number
+# is a better dedup ordering than any load timestamp, which records when we
+# fetched rather than when the row changed and ties whenever a page lands
+# several changes at once.
+SEQUENCE_COLUMNS = ("RECORD_ID", "SEQ_NO", "SEQ_ID", "CHANGE_SEQ", "INGEST_ID", "_ID")
 
 TIMESTAMP_TYPES = ("TIMESTAMP", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ", "DATETIME")
 
@@ -81,12 +86,42 @@ def is_landing_object(fqn: str) -> bool:
 
 
 def _find_column(table: ParsedTable | None, candidates: tuple[str, ...]) -> str | None:
+    """The first of `candidates` this table has, exact match preferred.
+
+    The fallback is a suffix match on an underscore boundary, so a house style
+    that prefixes its metadata columns - `ETL_LOADED_AT`, `DW_UPDATED_AT`,
+    `_ETL_LOADED_AT` - is recognised as the column it plainly is. This is not
+    cosmetic: the settle column is what separates a row still in flight from a
+    row that was lost, so a table whose timestamp column is not recognised gets
+    no parity check at all. A repo that prefixes consistently, which is the
+    common convention, would otherwise derive nothing and look like a repo with
+    a simple pipeline rather than one the parser did not understand.
+
+    Exact still wins, so a table carrying both `LOADED_AT` and `ETL_LOADED_AT`
+    resolves to the unprefixed one rather than to whichever is found first.
+    """
     if not table:
         return None
     names = {c["name"].upper() for c in table["columns"]}
     for candidate in candidates:
         if candidate in names:
             return candidate
+    for candidate in candidates:
+        # Only compound names are matched by suffix. A generic fragment like
+        # `_ID` would otherwise swallow every key column in the table -
+        # `MEMBER_ID` is not a sequence column, and picking it as one produces a
+        # parity check that orders bronze rows by their key and calls the result
+        # a sequence. Requiring an underscore inside the candidate keeps the
+        # fallback to names that are already specific.
+        stem = candidate.lstrip("_")
+        if "_" not in stem:
+            continue
+        # Guarding on the boundary is what stops `UNLOADED_AT` matching
+        # `LOADED_AT`.
+        suffix = f"_{stem}"
+        matches = sorted(name for name in names if name.endswith(suffix))
+        if matches:
+            return matches[0]
     return None
 
 
@@ -158,6 +193,69 @@ def _settle_column(table: ParsedTable | None, landing: bool) -> str | None:
     return _find_column(table, UPDATED_AT_COLUMNS) or _find_column(table, LOADED_AT_COLUMNS)
 
 
+# The column shapes that together mark a type-2 slowly-changing dimension. A
+# table needs one name from each group to qualify: a validity window and a way
+# to say which version is live. Either alone is not enough - a VALID_FROM with
+# no end is an event date, and an IS_CURRENT with no window is a status flag.
+SCD2_VALID_FROM_COLUMNS = ("VALID_FROM", "EFFECTIVE_FROM", "START_DATE", "DBT_VALID_FROM")
+SCD2_VALID_TO_COLUMNS = ("VALID_TO", "EFFECTIVE_TO", "END_DATE", "DBT_VALID_TO")
+SCD2_CURRENT_FLAG_COLUMNS = ("IS_CURRENT", "IS_ACTIVE", "CURRENT_FLAG", "IS_LATEST")
+
+
+class Scd2Shape(TypedDict):
+    valid_from: str
+    valid_to: str
+    current_flag: str
+
+
+def detect_scd2(table: ParsedTable | None) -> Scd2Shape | None:
+    """The SCD2 column triple, if this table has one.
+
+    Detected from column shape rather than from the MERGE, because the MERGE
+    that maintains an SCD2 dimension is normally two statements - close the old
+    version, open the new one - and neither on its own looks like anything in
+    particular. The table, on the other hand, says plainly what it is: a
+    validity window plus a current flag is not a shape that occurs by accident.
+
+    Shape detection is a proposal, not a conclusion. It is why the checks this
+    produces are offered for review rather than applied - a table can carry
+    these three columns and be maintained as something else entirely, and only
+    a person reading the pipeline can say so.
+    """
+    if not table:
+        return None
+    valid_from = _find_column(table, SCD2_VALID_FROM_COLUMNS)
+    valid_to = _find_column(table, SCD2_VALID_TO_COLUMNS)
+    current_flag = _find_column(table, SCD2_CURRENT_FLAG_COLUMNS)
+    if not (valid_from and valid_to and current_flag):
+        return None
+    return {"valid_from": valid_from, "valid_to": valid_to, "current_flag": current_flag}
+
+
+def _is_target_column(name: str, target_table: ParsedTable | None) -> bool:
+    """Whether the target really has this column.
+
+    A MERGE's USING projection is not the same list as its INSERT column list.
+    Helper aliases are routine - an SCD2 close statement selects `CHANGED_AT`
+    only to write it into `VALID_TO`, and a staging select carries working
+    columns that are never inserted anywhere. Taking every alias as a target
+    column produces a comparison against a column that does not exist, which
+    fails at execution as an ERROR run rather than as a FAILED one.
+
+    That distinction is why this filters instead of flagging. A FAILED check
+    says the pipeline is wrong; an ERROR check says the check is wrong, and
+    shipping checks that are wrong on arrival teaches people to ignore the
+    colour of the dashboard.
+
+    Unknown target table means no basis to exclude anything, so nothing is
+    excluded - the parser not having found the CREATE TABLE is not evidence
+    that a column is absent.
+    """
+    if target_table is None:
+        return True
+    return name.upper() in {c["name"].upper() for c in target_table["columns"]}
+
+
 def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckProposal | None:
     """Key-and-value parity for one MERGE, at whatever layer it sits.
 
@@ -176,6 +274,18 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
     if not source or not merge["key_columns"]:
         return None
 
+    if source == target:
+        # A MERGE from a table into itself is not a pipeline hop. It is how a
+        # loader upserts its own landing table - the MERGE-on-PK bronze write
+        # strategy - and how maintenance statements inside stored procedures are
+        # written. Deriving parity from one produces a check that compares a
+        # table to itself, which passes unconditionally.
+        #
+        # An always-passing check is worse than an absent one: it occupies a
+        # slot in the coverage count, so the report reads as "this table is
+        # covered" when nothing about it is being tested.
+        return None
+
     landing = is_landing_object(source)
     source_table = tables.get(source)
     settle_column = _settle_column(source_table, landing)
@@ -188,6 +298,29 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
         f"{_schema_of(source).lower()} -> {_schema_of(target).lower()}"
     )
     concerns = _mapping_concerns(merge)
+
+    # An SCD2 target holds one row per version of a key, so an unrestricted
+    # comparison counts a key's history as duplicates of it. Restricting to the
+    # current row is what makes "exactly once" true again - and the check then
+    # asserts the thing worth asserting, that every source key has a live row.
+    # The history's own integrity is a separate question, and gets its own
+    # checks rather than being folded into this one.
+    target_table = tables.get(target)
+    scd2 = detect_scd2(target_table)
+    target_filter = f"{scd2['current_flag']} = TRUE" if scd2 else None
+    scd2_note = ""
+    if scd2:
+        scd2_note = (
+            f" {_table_of(target)} looks like a type-2 dimension ({scd2['valid_from']}/"
+            f"{scd2['valid_to']}/{scd2['current_flag']}), so only its current rows take part."
+        )
+        concerns.append(
+            f"{_table_of(target)} was detected as an SCD2 dimension from its column shape, and "
+            f"the comparison is restricted to `{scd2['current_flag']} = TRUE`. If it is really "
+            f"maintained as something else, that filter is wrong and this check is measuring a "
+            f"subset. The history's own integrity is checked separately."
+        )
+
     filter_note = ""
     if merge["filter_predicate"]:
         filter_note = (
@@ -211,7 +344,7 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
         "rationale": (
             f"Derived from the MERGE in {merge['file_path']}. The key and the column "
             f"mapping are the contract that MERGE states; this check asserts it held."
-            f"{filter_note}"
+            f"{filter_note}{scd2_note}"
         ),
         "type": "BRONZE_TO_SILVER_PARITY",
         "schedule": "*/10 * * * *",
@@ -222,6 +355,7 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
             "bronzeLoadedAtColumn": settle_column,
             "bronzeSequenceColumn": _find_column(source_table, SEQUENCE_COLUMNS),
             "sourceFilter": merge["filter_predicate"],
+            "silverFilter": target_filter,
             "lagMinutes": DEFAULT_LAG_MINUTES,
             "keyColumns": [
                 {"name": k["name"], "bronze": k["source_expr"], "silver": k["target_expr"]}
@@ -230,6 +364,7 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
             "valueColumns": [
                 {"name": v["name"], "bronze": v["source_expr"], "silver": v["target_expr"]}
                 for v in merge["value_columns"]
+                if _is_target_column(v["target_expr"], target_table)
             ],
         },
         "source": "heuristic",
@@ -356,6 +491,78 @@ def _null_rate_proposal(table: ParsedTable, column: ParsedColumn) -> CheckPropos
     }
 
 
+def _scd2_proposal(
+    table: ParsedTable, merges: list[ParsedMerge]
+) -> CheckProposal | None:
+    """The four history assertions, for a table whose shape says SCD2.
+
+    The natural key is taken from the MERGE that maintains the dimension rather
+    than from the table, because the table cannot distinguish it from the
+    surrogate key - both are just columns, and picking the surrogate would make
+    every assertion trivially pass. One row per "key", no window to overlap, no
+    history to contradict itself: a check that always passes and says nothing.
+
+    So no MERGE means no proposal. Guessing the natural key from naming would
+    produce exactly that silently-vacuous check, and a check that cannot fail is
+    more dangerous than a missing one - it makes the coverage report claim
+    ground it never covered.
+    """
+    scd2 = detect_scd2(table)
+    if not scd2:
+        return None
+
+    key_columns: list[str] = []
+    for merge in merges:
+        if merge["target"] == table["fqn"] and merge["key_columns"]:
+            key_columns = [k["name"] for k in merge["key_columns"]]
+            break
+    if not key_columns:
+        return None
+
+    surrogate_note = ""
+    column_names = {c["name"].upper() for c in table["columns"]}
+    if any(n.endswith("_KEY") for n in column_names):
+        surrogate_note = (
+            " The table also has a surrogate key column; this check deliberately uses the "
+            "natural key from the MERGE, since the surrogate is unique per row and would make "
+            "every assertion pass without testing anything."
+        )
+
+    keys = ", ".join(key_columns)
+    return {
+        "key": f"scd2:{table['fqn']}",
+        "name": f"{_table_of(table['fqn']).title().replace('_', ' ')}: SCD2 history integrity",
+        "description": (
+            f"{_table_of(table['fqn'])} keeps one row per version of {keys}. Its versions should "
+            "form a clean history: one current row each, no overlaps, no gaps."
+        ),
+        "rationale": (
+            f"{table['fqn']} has the type-2 shape - {scd2['valid_from']}/{scd2['valid_to']}/"
+            f"{scd2['current_flag']} - so its correctness is a statement about versions, not "
+            f"rows, and no parity check can see it. A key with two current rows makes every "
+            f"join through this dimension fan out and double its measures, and nothing else "
+            f"reports that.{surrogate_note}"
+        ),
+        "type": "SCD2_INTEGRITY",
+        "schedule": "*/15 * * * *",
+        "database": _database_of(table["fqn"]),
+        "config": {
+            "object": table["fqn"],
+            "naturalKeyColumns": key_columns,
+            "validFromColumn": scd2["valid_from"],
+            "validToColumn": scd2["valid_to"],
+            "currentFlagColumn": scd2["current_flag"],
+        },
+        "source": "heuristic",
+        "concerns": [
+            f"The open-ended marker is assumed to be the sentinel 9999-12-31. If "
+            f"{scd2['valid_to']} uses NULL instead, clear `openEndedSentinel` - the convention "
+            f"cannot be read off the DDL, and a table that mixes both is the fault this check "
+            f"is looking for."
+        ],
+    }
+
+
 def propose_checks(parsed: ParsedRepo) -> list[CheckProposal]:
     """Generates every check the DDL justifies, in the order a reviewer reads them."""
     tables = _tables_by_fqn(parsed)
@@ -371,6 +578,11 @@ def propose_checks(parsed: ParsedRepo) -> list[CheckProposal]:
 
     for target in dict.fromkeys(m["target"] for m in parsed["merges"]):
         proposal = _freshness_proposal(target, tables, parsed["cadence"])
+        if proposal:
+            proposals.append(proposal)
+
+    for table in parsed["tables"]:
+        proposal = _scd2_proposal(table, parsed["merges"])
         if proposal:
             proposals.append(proposal)
 

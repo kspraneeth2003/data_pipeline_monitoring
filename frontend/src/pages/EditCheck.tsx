@@ -29,7 +29,7 @@ export function EditCheck() {
             { label: "Edit" },
           ]}
         />
-        <h1 className="mb-6 text-2xl font-semibold tracking-tight text-foreground">Edit check</h1>
+        <h1 className="mb-6 text-2xl font-semibold tracking-[0.08em] text-foreground">Edit check</h1>
 
         <CheckForm
           connectors={connectors}
@@ -37,6 +37,7 @@ export function EditCheck() {
             id: check.id,
             name: check.name,
             description: check.description,
+            rationale: check.rationale,
             type: check.type,
             schedule: check.schedule,
             enabled: check.enabled,

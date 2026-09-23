@@ -7,6 +7,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { RunNowButton } from "../components/RunNowButton";
 import { EnabledToggle } from "../components/EnabledToggle";
 import { DeleteButton } from "../components/DeleteButton";
+import { CheckExplanation } from "../components/CheckExplanation";
 
 export function CheckDetail() {
   const { id, slug = "", dbSlug = "" } = useParams<{ id: string; slug: string; dbSlug: string }>();
@@ -35,7 +36,7 @@ export function CheckDetail() {
 
         <header className="mb-6 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-foreground">{check.name}</h1>
+            <h1 className="text-2xl font-semibold tracking-[0.08em] text-foreground">{check.name}</h1>
             {check.description && <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">{check.description}</p>}
             <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
               <div>
@@ -66,7 +67,7 @@ export function CheckDetail() {
             <EnabledToggle checkId={check.id} enabled={check.enabled} onDone={reload} />
             <Link
               to={`/projects/${slug}/databases/${dbSlug}/checks/${check.id}/edit`}
-              className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors dark:text-zinc-200 dark:hover:bg-zinc-800"
             >
               Edit
             </Link>
@@ -79,6 +80,12 @@ export function CheckDetail() {
             />
           </div>
         </header>
+
+        <CheckExplanation
+          rationale={check.rationale}
+          statements={check.statements}
+          statementsError={check.statements_error}
+        />
 
         <section className="mb-6 rounded-xl border border-border bg-surface p-4 shadow-sm">
           <h2 className="mb-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Config</h2>
@@ -111,7 +118,7 @@ export function CheckDetail() {
                     <div className="flex items-center justify-between">
                       <div className="font-semibold text-amber-800 dark:text-amber-300">Root Cause Analysis</div>
                       {run.rca.confidence !== null && (
-                        <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
+                        <span className="rounded-none bg-amber-200 px-2 py-0.5 text-[11px] font-medium text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
                           {Math.round(run.rca.confidence * 100)}% confidence
                         </span>
                       )}

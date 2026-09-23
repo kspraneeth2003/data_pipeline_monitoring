@@ -75,6 +75,18 @@ class BronzeToSilverParityConfig(BaseModel):
     # what the ingestion review step is for.
     sourceFilter: str | None = None
 
+    # The mirror of `sourceFilter`, on the target side. Its reason for existing
+    # is the SCD2 dimension: that target holds one row per version of a key, so
+    # an unrestricted comparison reads a member with three versions as three
+    # duplicate keys - the dimension working exactly as designed - and the check
+    # fails forever on correct data. `IS_CURRENT = TRUE` restores the statement
+    # the check was always meant to make.
+    #
+    # Same provenance caveat as `sourceFilter`: this is a SQL fragment lifted
+    # from the DDL and interpolated into the generated statement, so anything
+    # reaching it from outside the parser has to be reviewed before it is saved.
+    silverFilter: str | None = None
+
     # The composite key silver is expected to be unique on - normally lifted
     # straight from the MERGE's ON clause.
     keyColumns: list[ParityColumn] = Field(min_length=1)
@@ -101,6 +113,44 @@ class BronzeToSilverParityConfig(BaseModel):
     sampleLimit: int = Field(default=5, ge=0, le=100)
 
 
+class Scd2IntegrityConfig(BaseModel):
+    """The four integrity assertions on a type-2 dimension.
+
+    Tolerances default to zero and should stay there. Unlike a null rate, where
+    some non-zero level is normal and the question is how much, every one of
+    these is a contradiction in the data: there is no correct number of keys
+    with two current rows. They are settable only because a table mid-backfill
+    can have a known, temporary population of them, and a check that cannot be
+    told so gets disabled instead - which loses the check permanently to fix a
+    problem that lasts an afternoon.
+    """
+
+    object: str
+    # The source's own identifier, repeated once per version. Not the surrogate
+    # key, which is unique per row and would make every assertion here trivially
+    # pass - each "key" would have exactly one version and no window to overlap.
+    naturalKeyColumns: list[str] = Field(min_length=1)
+
+    validFromColumn: str = "VALID_FROM"
+    validToColumn: str = "VALID_TO"
+    currentFlagColumn: str = "IS_CURRENT"
+
+    # How an open-ended version is written: a sentinel timestamp, or None for
+    # the NULL convention. There is no detecting this from the data - a table
+    # that mixes both is the fault being looked for, so inferring the convention
+    # from whichever appears more often would make the check agree with it.
+    openEndedSentinel: str | None = "9999-12-31"
+    validToType: str = "TIMESTAMP_NTZ"
+
+    maxKeysWithNoCurrent: int = Field(default=0, ge=0)
+    maxKeysWithManyCurrent: int = Field(default=0, ge=0)
+    maxOverlappingVersions: int = Field(default=0, ge=0)
+    maxGappedVersions: int = Field(default=0, ge=0)
+    maxInvalidWindows: int = Field(default=0, ge=0)
+
+    sampleLimit: int = Field(default=5, ge=0, le=100)
+
+
 CONFIG_SCHEMAS_BY_TYPE: dict[str, type[BaseModel]] = {
     "ROW_COUNT": RowCountConfig,
     "FRESHNESS": FreshnessConfig,
@@ -108,4 +158,5 @@ CONFIG_SCHEMAS_BY_TYPE: dict[str, type[BaseModel]] = {
     "SCHEMA_DRIFT": SchemaDriftConfig,
     "CROSS_SOURCE_PARITY": CrossSourceParityConfig,
     "BRONZE_TO_SILVER_PARITY": BronzeToSilverParityConfig,
+    "SCD2_INTEGRITY": Scd2IntegrityConfig,
 }

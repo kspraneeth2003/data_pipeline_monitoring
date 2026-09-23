@@ -85,11 +85,31 @@ def _source_filter_clause(source_filter: str | None) -> str:
     return f"\n    AND ({source_filter})"
 
 
+def _target_filter_clause(target_filter: str | None) -> str:
+    """A predicate restricting which target rows take part in the comparison.
+
+    The case this exists for is an SCD2 dimension. Such a target holds one row
+    per *version* of a key, so a parity check that counts every row reports a
+    member with three versions as three duplicate keys - and since that is the
+    dimension working correctly, the check fails forever on correct data and
+    gets muted. Restricting the target side to `IS_CURRENT = TRUE` makes the
+    comparison mean what it was always supposed to mean: every source key is
+    represented, exactly once, by a current row.
+
+    This is a `WHERE`, not an `AND`, because `silver_all` has no other
+    predicate - the target side has no settling window, only the source does.
+    """
+    if not target_filter:
+        return ""
+    return f"\n  WHERE ({target_filter})"
+
+
 def build_parity_sql(config: BronzeToSilverParityConfig) -> str:
     key_aliases = [_key_alias(i) for i in range(len(config.keyColumns))]
     value_aliases = [_value_alias(i) for i in range(len(config.valueColumns))]
     at = _at_clause(config.asOfTimestamp)
     source_filter = _source_filter_clause(config.sourceFilter)
+    target_filter = _target_filter_clause(config.silverFilter)
 
     bronze_keys = ",\n      ".join(
         f"{col.bronze} AS {alias}" for col, alias in zip(config.keyColumns, key_aliases)
@@ -174,7 +194,7 @@ bronze_pending AS (
 silver_all AS (
   SELECT
       {silver_keys}{silver_values}
-  FROM {config.silverObject}{at}
+  FROM {config.silverObject}{at}{target_filter}
 ),
 silver_counts AS (
   SELECT {partition_by}, COUNT(*) AS _S_ROWS

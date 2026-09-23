@@ -25,6 +25,9 @@ class CheckType(str, enum.Enum):
     SCHEMA_DRIFT = "SCHEMA_DRIFT"
     CROSS_SOURCE_PARITY = "CROSS_SOURCE_PARITY"
     BRONZE_TO_SILVER_PARITY = "BRONZE_TO_SILVER_PARITY"
+    # Advanced: the history a type-2 dimension holds, rather than whether
+    # its rows arrived. Parity cannot see this class of fault at all.
+    SCD2_INTEGRITY = "SCD2_INTEGRITY"
 
 
 class RunStatus(str, enum.Enum):
@@ -204,7 +207,16 @@ class Check(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
     name: Mapped[str] = mapped_column(String)
+    # What this check asserts, in at most two lines of plain language.
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Why it is worth asserting: the invariant relied on, where that invariant
+    # came from (this MERGE, this NOT NULL, this SCD2 shape), and what a
+    # failure would mean. Promoted out of `derived_from` - it lived there as an
+    # incidental key, so only derived checks had one and nothing rendered it,
+    # which left every hand-written check a red square with no explanation.
+    # The third thing a check owes its reader, the SQL, is built on demand from
+    # `config` by `checks/sql.py` rather than stored, so it cannot go stale.
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str] = mapped_column(String)
     schedule: Mapped[str] = mapped_column(String)
     enabled: Mapped[bool] = mapped_column(default=True)

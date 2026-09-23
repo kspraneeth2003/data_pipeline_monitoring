@@ -241,6 +241,24 @@ def parse_tables(sql: str, file_path: str) -> list[ParsedTable]:
     return tables
 
 
+def _normalize_key_equality(condition: str) -> str:
+    r"""Rewrites `a IS NOT DISTINCT FROM b` to `a = b` so one splitter handles both.
+
+    Null-safe equality is the idiomatic MERGE join wherever a key column can be
+    null, and a pipeline written against a source that emits null keys uses it
+    throughout. Treating it as unparseable costs the entire check rather than
+    part of one: the ON clause yields no keys, so no parity check is derived for
+    that table at all, and a repo written in this style derives almost nothing
+    while looking indistinguishable from a repo with a simple pipeline.
+
+    `IS DISTINCT FROM` - the negation - is deliberately left alone. It asserts
+    the two sides *differ*, so reading it as key equality would invert the join
+    and compare every row against every row it is not. The `NOT` is the whole
+    difference, and matching it explicitly is what keeps the two apart.
+    """
+    return re.sub(r"\bIS\s+NOT\s+DISTINCT\s+FROM\b", "=", condition, flags=re.IGNORECASE)
+
+
 def _strip_alias(expr: str) -> str:
     """`tgt.` / `src.` prefixes carry no meaning once we know which side we are on."""
     return re.sub(r"^\s*[A-Za-z_][\w$]*\s*\.\s*", "", expr.strip())
@@ -414,7 +432,7 @@ def parse_merges(sql: str, file_path: str) -> list[ParsedMerge]:
         source_map = _parse_select_list(using_body)
         key_columns: list[ColumnMapping] = []
         for condition in re.split(r"\bAND\b", on_match.group(1), flags=re.IGNORECASE):
-            sides = split_top_level(condition, "=")
+            sides = split_top_level(_normalize_key_equality(condition), "=")
             if len(sides) != 2:
                 continue
             target_col = unquote(_strip_alias(sides[0]))

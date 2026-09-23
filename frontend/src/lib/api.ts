@@ -80,6 +80,16 @@ export type Database = {
   health: ProjectHealth;
 };
 
+/** One statement a check issues, and what it establishes.
+ *
+ * Built by the backend from the check's config on every read, so it is the SQL
+ * the engine would actually run rather than a description of it. */
+export type CheckStatement = {
+  label: string;
+  sql: string;
+  connection: "primary" | "secondary";
+};
+
 export type ProposedCheck = {
   key: string;
   name: string;
@@ -91,6 +101,8 @@ export type ProposedCheck = {
   config: Record<string, unknown>;
   source: "heuristic" | "llm";
   concerns: string[];
+  statements: CheckStatement[];
+  statements_error: string | null;
 };
 
 export type ProposedDatabase = {
@@ -259,6 +271,9 @@ export type Check = {
   id: string;
   name: string;
   description: string | null;
+  rationale: string | null;
+  statements: CheckStatement[];
+  statements_error: string | null;
   type: string;
   schedule: string;
   enabled: boolean;

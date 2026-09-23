@@ -15,7 +15,8 @@ export type CheckTypeMeta = {
     | "NULL_RATE"
     | "SCHEMA_DRIFT"
     | "CROSS_SOURCE_PARITY"
-    | "BRONZE_TO_SILVER_PARITY";
+    | "BRONZE_TO_SILVER_PARITY"
+    | "SCD2_INTEGRITY";
   label: string;
   description: string;
   needsSecondaryConnector: boolean;
@@ -148,6 +149,13 @@ export const CHECK_TYPES: CheckTypeMeta[] = [
         optional: true,
       },
       {
+        key: "silverFilter",
+        label: "Target filter - set this to IS_CURRENT = TRUE when the target is an SCD2 dimension",
+        kind: "text",
+        placeholder: "IS_CURRENT = TRUE",
+        optional: true,
+      },
+      {
         key: "lagMinutes",
         label: "Settling lag (minutes) - source rows newer than this are still in flight",
         kind: "number",
@@ -157,6 +165,55 @@ export const CHECK_TYPES: CheckTypeMeta[] = [
       { key: "maxMissingInSilver", label: "Max source keys missing from the target", kind: "number", optional: true },
       { key: "maxExtraInSilver", label: "Max target keys with no source origin", kind: "number", optional: true },
       { key: "maxValueMismatches", label: "Max value mismatches", kind: "number", optional: true },
+    ],
+  },
+  {
+    value: "SCD2_INTEGRITY",
+    label: "SCD2 history integrity",
+    description:
+      "For a type-2 dimension: exactly one current row per key, no overlapping validity windows, no gaps between versions, and every window well-formed. Parity cannot see any of these — a dimension can hold every row it should and still contradict itself.",
+    needsSecondaryConnector: false,
+    fields: [
+      {
+        key: "object",
+        label: "Dimension table (fully qualified)",
+        kind: "text",
+        placeholder: "DB.SILVER.MEMBERS",
+      },
+      {
+        key: "naturalKeyColumns",
+        label:
+          "Natural key (JSON array) - the source's own id, repeated once per version. NOT the surrogate key, which is unique per row and would make every assertion pass without testing anything",
+        kind: "json",
+        placeholder: '["MEMBER_ID"]',
+      },
+      { key: "validFromColumn", label: "Valid-from column", kind: "text", placeholder: "VALID_FROM", optional: true },
+      { key: "validToColumn", label: "Valid-to column", kind: "text", placeholder: "VALID_TO", optional: true },
+      {
+        key: "currentFlagColumn",
+        label: "Current-row flag column",
+        kind: "text",
+        placeholder: "IS_CURRENT",
+        optional: true,
+      },
+      {
+        key: "openEndedSentinel",
+        label:
+          "Open-ended marker - the sentinel an open version carries. Leave blank if the table uses NULL instead; the two conventions are not interchangeable and cannot be read off the data",
+        kind: "text",
+        placeholder: "9999-12-31",
+        optional: true,
+      },
+      {
+        key: "maxKeysWithManyCurrent",
+        label: "Max keys with more than one current row (leave at 0 - this one doubles every joined measure)",
+        kind: "number",
+        optional: true,
+      },
+      { key: "maxKeysWithNoCurrent", label: "Max keys with no current row", kind: "number", optional: true },
+      { key: "maxOverlappingVersions", label: "Max overlapping versions", kind: "number", optional: true },
+      { key: "maxGappedVersions", label: "Max gaps between versions", kind: "number", optional: true },
+      { key: "maxInvalidWindows", label: "Max malformed windows (valid-from at or after valid-to)", kind: "number", optional: true },
     ],
   },
 ];

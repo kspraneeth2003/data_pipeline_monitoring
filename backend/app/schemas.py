@@ -104,6 +104,7 @@ class DatabaseRef(BaseModel):
 class CheckCreate(BaseModel):
     name: str
     description: str | None = None
+    rationale: str | None = None
     type: str
     schedule: str
     enabled: bool = True
@@ -116,6 +117,7 @@ class CheckCreate(BaseModel):
 class CheckUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
+    rationale: str | None = None
     type: str | None = None
     schedule: str | None = None
     enabled: bool | None = None
@@ -157,12 +159,29 @@ class CheckRunOut(BaseModel):
     rca: RcaOut | None = None
 
 
+class CheckStatementOut(BaseModel):
+    """One statement the check issues, and what it establishes.
+
+    Built from `config` on read rather than stored, so it is always the SQL the
+    engine would actually run. `error` is populated instead of `statements`
+    when the config cannot produce one - a check that would ERROR on its first
+    run, which is worth seeing before it is scheduled rather than after.
+    """
+
+    label: str
+    sql: str
+    connection: str
+
+
 class CheckOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
     name: str
     description: str | None
+    rationale: str | None
+    statements: list[CheckStatementOut] = []
+    statements_error: str | None = None
     type: str
     schedule: str
     enabled: bool
@@ -257,6 +276,13 @@ class ProposedCheck(BaseModel):
     config: dict[str, Any]
     source: str
     concerns: list[str] = []
+    # The SQL this proposal would run, so review sees all three of description,
+    # logic and statement before anything is written. A proposal whose config
+    # cannot build one is a check that would ERROR on its first run, which is a
+    # reason to reject it - hence the error travels with it rather than being
+    # swallowed.
+    statements: list[CheckStatementOut] = []
+    statements_error: str | None = None
 
 
 class ProposedDatabase(BaseModel):

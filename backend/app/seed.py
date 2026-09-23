@@ -131,6 +131,12 @@ def main() -> None:
             database_id=crm.id,
             name="Customers: Silver vs Gold row count parity",
             description="Every customer landed in CRM silver should show up in the gold 360 table.",
+            rationale=(
+                "The gold 360 table is built by joining CRM silver to billing, and the join is "
+                "meant to preserve every customer. A count that drops means the join turned "
+                "inner somewhere, or the upstream task did not run - both of which present as "
+                "a silently smaller gold table rather than as an error."
+            ),
             type="ROW_COUNT",
             schedule="*/5 * * * *",
             connector_id=snowflake.id,
@@ -147,6 +153,11 @@ def main() -> None:
             database_id=customer_gold.id,
             name="Gold Customer 360 freshness",
             description="Gold table should be refreshed at least every 90 minutes given the hourly dummy-data generator.",
+            rationale=(
+                "The generator writes hourly, so 90 minutes is one missed cycle plus slack. "
+                "Tighter than that and a single slow run mutes the check; looser and a whole "
+                "day of staleness reads as healthy."
+            ),
             type="FRESHNESS",
             schedule="*/10 * * * *",
             connector_id=snowflake.id,
@@ -163,6 +174,11 @@ def main() -> None:
             database_id=crm.id,
             name="CRM silver customers: email null rate",
             description="Email should be populated for effectively all customers.",
+            rationale=(
+                "Email is the key downstream systems match customers on, so a null is not a "
+                "missing attribute but an unreachable record. The tolerance is near-zero "
+                "because the silver transform is supposed to drop rows without one."
+            ),
             type="NULL_RATE",
             schedule="*/15 * * * *",
             connector_id=snowflake.id,
@@ -175,6 +191,11 @@ def main() -> None:
             database_id=billing.id,
             name="Billing silver invoices: schema drift",
             description="Guards against unexpected schema changes to the silver invoices table.",
+            rationale=(
+                "Every parity and quality check on this table is written against its column "
+                "contract. When that contract moves, those checks fail all at once and for "
+                "reasons that look unrelated - this is the one that says why."
+            ),
             type="SCHEMA_DRIFT",
             schedule="*/30 * * * *",
             connector_id=snowflake.id,
@@ -203,6 +224,13 @@ def main() -> None:
             description=(
                 "Every settled bronze customer record should appear exactly once in silver, "
                 "with values intact. Key and column mapping mirror TASK_BRONZE_TO_SILVER_CUSTOMERS."
+            ),
+            rationale=(
+                "Silver is meant to be a deduplicated, lossless projection of bronze, so the "
+                "comparison is a FULL OUTER JOIN on the MERGE's own key: it can see loss, "
+                "surplus and duplication in one pass, where EXCEPT would only see one side. "
+                "Value parity is included because key parity alone cannot detect a MERGE that "
+                "reads the wrong payload field - the keys still line up perfectly."
             ),
             type="BRONZE_TO_SILVER_PARITY",
             schedule="*/10 * * * *",
@@ -241,6 +269,12 @@ def main() -> None:
             description=(
                 "Same contract for the products pipeline. Currently surfaces the mis-mapped "
                 "warehouse_id payload field."
+            ),
+            rationale=(
+                "Written by hand rather than derived, and that is the point: the MERGE reads "
+                "RAW_PAYLOAD:warehouse into WAREHOUSE_ID when the landed key is warehouse_id. "
+                "A check derived from the MERGE encodes the same mistake and passes. This one "
+                "states what the data should be, so it fails."
             ),
             type="BRONZE_TO_SILVER_PARITY",
             schedule="*/10 * * * *",

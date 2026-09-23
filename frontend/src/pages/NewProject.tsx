@@ -234,7 +234,7 @@ export function NewProject() {
       <Breadcrumbs items={[{ label: "Projects", to: "/" }, { label: "New project" }]} />
 
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">New project</h1>
+        <h1 className="text-2xl font-semibold tracking-[0.08em] text-foreground">New project</h1>
         <p className="mt-1 text-sm text-zinc-500">
           Point at the repository that defines your pipeline. The databases and a starting set of
           checks are derived from its DDL.
@@ -255,7 +255,7 @@ export function NewProject() {
               }`}
             >
               <span
-                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${
+                className={`flex h-5 w-5 items-center justify-center rounded-none text-xs ${
                   step === s.n
                     ? "bg-accent text-accent-foreground"
                     : step > s.n
@@ -395,7 +395,7 @@ export function NewProject() {
 
           {analyzing && (
             <div className="flex items-center gap-3 rounded-lg border border-accent/30 bg-accent-soft/40 px-4 py-3 text-sm">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+              <span className="h-2 w-2 animate-pulse rounded-none bg-accent" />
               <span className="text-foreground">{job?.stage}…</span>
             </div>
           )}
@@ -595,9 +595,13 @@ export function NewProject() {
 }
 
 /**
- * One proposed check. The rationale is shown rather than hidden behind a
- * disclosure: a check the reviewer cannot justify is one they should be
- * deselecting, and making them click to find out why guarantees they will not.
+ * One proposed check, showing all three of what a check owes its reader:
+ * description, logic, and the SQL it would run.
+ *
+ * The first two are shown outright rather than hidden behind a disclosure: a
+ * check the reviewer cannot justify is one they should be deselecting, and
+ * making them click to find out why guarantees they will not. The SQL folds
+ * away only because it is long enough to bury the other two.
  */
 function CheckRow({
   check,
@@ -633,7 +637,33 @@ function CheckRow({
               {check.source === "llm" ? "agent" : "from DDL"}
             </span>
           </span>
+          <span className="mt-0.5 block text-xs text-foreground/80">{check.description}</span>
           <span className="mt-0.5 block text-xs text-zinc-500">{check.rationale}</span>
+          {/* The SQL is the one of the three that is folded away, and only
+              because it is the only one long enough to bury the others. The
+              summary line still says a statement exists, so a check with no
+              runnable SQL is visible without opening anything. */}
+          {check.statements_error ? (
+            <span className="mt-1.5 block rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+              No runnable SQL: {check.statements_error}
+            </span>
+          ) : (
+            <details className="mt-1" onClick={(e) => e.stopPropagation()}>
+              <summary className="cursor-pointer text-xs text-accent">
+                SQL ({check.statements.length} statement{check.statements.length === 1 ? "" : "s"})
+              </summary>
+              <div className="mt-1 space-y-2">
+                {check.statements.map((statement, index) => (
+                  <pre
+                    key={index}
+                    className="overflow-x-auto rounded-lg bg-zinc-50 p-2 text-[11px] leading-relaxed text-zinc-700 dark:bg-black/30 dark:text-zinc-300"
+                  >
+                    {statement.sql}
+                  </pre>
+                ))}
+              </div>
+            </details>
+          )}
           {check.concerns.map((concern) => (
             <span
               key={concern}

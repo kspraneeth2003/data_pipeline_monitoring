@@ -1,6 +1,6 @@
 -- DPM_SRC_INVENTORY.SILVER - cleaned/typed product inventory snapshot, fed by
 -- bronze via TASK_BRONZE_TO_SILVER_PRODUCTS (see bronze.sql). Feeds the gold
--- stock summary (see ../dpm_inventory_360/gold.sql).
+-- product dimension in the 360 (see ../dpm_customer_360/gold.sql).
 
 CREATE SCHEMA IF NOT EXISTS DPM_SRC_INVENTORY.SILVER;
 

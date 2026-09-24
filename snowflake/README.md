@@ -1,118 +1,147 @@
 # The test pipeline, as reviewed intent
 
-This directory is what the pipeline is *supposed* to be: idempotent, reviewed
-DDL, tracked in git so the RCA agent can attribute a failing object to a commit
-and an author. `../../ioi/` is the other half — a `GET_DDL` mirror of what the
-account actually contains. They are expected to drift, and the drift is the
-interesting part.
+Idempotent, reviewed DDL, tracked in git so the RCA agent can attribute a
+failing object to a commit and an author. `../../ioi/` is the other half — a
+`GET_DDL` mirror of what the account actually contains. They are expected to
+drift, and the drift is the interesting part.
 
-## What each database is for
+## Shape: many sources, one data product
 
-| Database | Shape it exercises |
+Four sources feeding **one** 360, which is the shape a real pipeline has — FCC
+runs fourteen sources into a single Fan360. This repo previously had three gold
+databases, one per source, which is not a data product but three small
+pipelines wearing one.
+
+| Database | What it exercises |
 |---|---|
 | `DPM_SRC_CRM` | append-only VARIANT landing → MERGE dedup into typed silver |
-| `DPM_SRC_BILLING` | the same, plus a closed-domain `STATUS` column and a money column |
+| `DPM_SRC_BILLING` | the same, plus a closed-domain `STATUS` and the product foreign key |
 | `DPM_SRC_INVENTORY` | the same, plus a **filtered** MERGE and the standing mis-mapped-payload bug |
-| `DPM_CUSTOMER_360` | silver → gold as a row-for-row projection, so key parity is meaningful |
-| `DPM_INVENTORY_360` | silver → gold aggregate |
 | `DPM_SRC_LOYALTY` | **CDC / MERGE-on-PK bronze**, composite snapshot grain, **SCD2 dimension**, loader cursor state |
-| `DPM_LOYALTY_360` | aggregate gold where key parity is meaningless and reconciliation is the check |
+| `DPM_CUSTOMER_360` | identity resolution, the unified model, and the reporting layer |
 
-The first five are all one shape. `DPM_SRC_LOYALTY` exists because a parity
-engine tested only against that shape is untested against most of what real
-pipelines do — the header comment on `dpm_src_loyalty/bronze.sql` says what each
-of its three tables breaks and why.
+`DPM_CUSTOMER_360` has three schemas, following the same split FCC uses:
+
+- **`IDENTITY`** — the part that makes this a 360 rather than a join. The CRM
+  knows a customer by `CUSTOMER_ID`; loyalty knows the same human by
+  `MEMBER_ID` and has never heard of the CRM. `INDIVIDUAL_XREF` decides they
+  are one person. Its own correctness is checkable and nothing downstream can
+  check it: the cross-reference must be a *function*, every source record must
+  resolve, and normalisation must be total.
+- **`GOLD`** — `INDIVIDUAL` and its `EMAIL` satellite, a `PRODUCT` dimension,
+  and two facts (`TRANSACTION`, `LOYALTY_DAILY`). Deliberately not one wide
+  table: a wide table can only be checked by row count, because every
+  interesting property of the model has been flattened out of it. `TRANSACTION`
+  carries two foreign keys and is therefore the only place referential
+  integrity can be asserted at all.
+- **`BI`** — derived numbers, where key parity is meaningless by construction
+  (ninety `LOYALTY_DAILY` rows behind one `INDIVIDUAL_ENGAGEMENT` row) and
+  reconciliation is the only true statement about the hop.
 
 ## Deploying
 
-The loyalty databases do not exist in the account yet. Everything here is
-idempotent (`CREATE ... IF NOT EXISTS`, `CREATE OR REPLACE TASK`), so a re-run is
-safe for the tables — but note that `CREATE OR REPLACE TASK` resets a task's
-state, and `CREATE OR REPLACE STREAM` **discards an unconsumed stream offset**,
-which drops whatever that stream had not yet moved. That is fine on a test
-account and is not fine anywhere else.
+Everything is idempotent. Note that `CREATE OR REPLACE TASK` resets a task's
+state and `CREATE OR REPLACE STREAM` **discards an unconsumed stream offset**,
+which drops whatever that stream had not yet moved — fine on a test account,
+not fine anywhere else.
 
-Order matters: tables before streams before tasks, since a stream needs its
-table and a task needs its stream.
+Order: suspend running tasks first, then silver before bronze (bronze holds the
+tasks that MERGE into silver), then identity before gold before BI.
 
 ```sql
--- 1. the source database: tables, streams, then the bronze -> silver tasks
---    (dpm_src_loyalty/silver.sql first, so the MERGE targets exist)
-@dpm_src_loyalty/silver.sql
-@dpm_src_loyalty/bronze.sql
-
--- 2. the serving database
-@dpm_loyalty_360/gold.sql
-
--- 3. the generator that stands in for the loyalty API loader
-@dpm_loyalty_360/generator.sql
-
--- 4. prime it, then let the hourly task take over
-CALL DPM_LOYALTY_360.GOLD.SP_GENERATE_LOYALTY_DATA(25, 10, 30, 3);
-ALTER TASK DPM_SRC_LOYALTY.BRONZE.TASK_BRONZE_TO_SILVER_MEMBERS_OPEN RESUME;
-ALTER TASK DPM_SRC_LOYALTY.BRONZE.TASK_BRONZE_TO_SILVER_MEMBERS_CLOSE RESUME;
-ALTER TASK DPM_SRC_LOYALTY.BRONZE.TASK_BRONZE_TO_SILVER_POINTS_DAILY RESUME;
-ALTER TASK DPM_LOYALTY_360.GOLD.TASK_SILVER_TO_GOLD_MEMBER_ENGAGEMENT RESUME;
-ALTER TASK DPM_LOYALTY_360.GOLD.TASK_GENERATE_LOYALTY_DATA RESUME;
+@dpm_src_crm/silver.sql        @dpm_src_crm/bronze.sql
+@dpm_src_billing/silver.sql    @dpm_src_billing/bronze.sql
+@dpm_src_inventory/silver.sql  @dpm_src_inventory/bronze.sql
+@dpm_src_loyalty/silver.sql    @dpm_src_loyalty/bronze.sql
+@dpm_customer_360/identity.sql
+@dpm_customer_360/gold.sql
+@dpm_customer_360/bi.sql
+@dpm_customer_360/generator.sql
+@dpm_customer_360/backfill.sql
 ```
 
-A child task (`..._MEMBERS_OPEN`, which runs `AFTER` the close task) has to be
-resumed before its parent, or Snowflake refuses the parent's resume. Hence the
-order above.
+Then prime it, backfill, and resume:
 
-Then refresh the mirror:
+```sql
+CALL DPM_CUSTOMER_360.GOLD.SP_GENERATE_TEST_DATA(30, 3, 20, 5, 2, 30);
+CALL DPM_CUSTOMER_360.GOLD.SP_BACKFILL_GOLD();
+```
+
+**The backfill is part of deploying, not an afterthought.** The silver → gold
+tasks are stream-driven, so they only ever move what changed since they last
+ran — everything already sitting in silver was never in a stream and would
+never arrive. Skip it and parity correctly reports thousands of missing keys on
+a pipeline that is working perfectly from that point on, which is how a check
+loses its reader's trust permanently.
+
+Resume children before roots, or Snowflake refuses the root:
+
+```sql
+ALTER TASK DPM_SRC_LOYALTY.BRONZE.TASK_BRONZE_TO_SILVER_MEMBERS_OPEN RESUME;
+ALTER TASK DPM_CUSTOMER_360.GOLD.TASK_SILVER_TO_GOLD_EMAIL RESUME;
+-- ...then every other task.
+```
+
+Refresh the mirror afterwards:
 
 ```bash
-cd ../backend
-PYTHONPATH=. uv run python ../../ioi/dump_ddl.py ../../ioi
+cd ../backend && PYTHONPATH=. uv run python ../../ioi/dump_ddl.py ../../ioi
 ```
 
-## Validating the deploy
+## Validating a deploy
+
+Run these by hand once. They are the hand-written versions of what the platform
+asserts, and running them separates "the check is wrong" from "the pipeline is
+wrong" before anyone has to debug a red dashboard.
 
 ```sql
--- bronze is one row per entity, not an event log (MERGE-on-PK)
-SELECT COUNT(*) AS ROWS, COUNT(DISTINCT MEMBER_ID) AS ENTITIES
-FROM DPM_SRC_LOYALTY.BRONZE.MEMBERS_RAW;   -- these two should be equal
+-- identity resolved, and actually matched across sources
+SELECT COUNT(*) rows, COUNT(DISTINCT INDIVIDUAL_ID) individuals
+FROM DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF;
+SELECT COUNT(*) FROM (
+  SELECT INDIVIDUAL_ID FROM DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF
+  GROUP BY 1 HAVING COUNT(DISTINCT SOURCE_SYSTEM) > 1);   -- must be > 0
 
--- the daily series really is per (member, day)
-SELECT MEMBER_ID, SNAPSHOT_DATE, COUNT(*)
-FROM DPM_SRC_LOYALTY.SILVER.POINTS_DAILY
-GROUP BY 1, 2 HAVING COUNT(*) > 1;         -- expect zero rows
+-- the cross-reference is a function, not a relation
+SELECT COUNT(*) FROM (
+  SELECT SOURCE_SYSTEM, SOURCE_ID FROM DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF
+  GROUP BY 1,2 HAVING COUNT(DISTINCT INDIVIDUAL_ID) > 1);  -- expect 0
 
--- the dimension has exactly one current row per member
-SELECT MEMBER_ID, COUNT_IF(IS_CURRENT) AS N_CURRENT
-FROM DPM_SRC_LOYALTY.SILVER.MEMBERS
-GROUP BY 1 HAVING COUNT_IF(IS_CURRENT) <> 1;   -- expect zero rows
+-- SCD2: exactly one current row per member, no malformed windows
+SELECT COUNT(*) FROM (SELECT MEMBER_ID FROM DPM_SRC_LOYALTY.SILVER.MEMBERS
+  GROUP BY 1 HAVING COUNT_IF(IS_CURRENT) <> 1);            -- expect 0
+SELECT COUNT(*) FROM DPM_SRC_LOYALTY.SILVER.MEMBERS
+ WHERE VALID_FROM >= VALID_TO;                             -- expect 0
 
--- gold reconciles against the silver series
-SELECT g.MEMBER_ID, g.TOTAL_POINTS_EARNED, SUM(p.POINTS_EARNED) AS SILVER_TOTAL
-FROM DPM_LOYALTY_360.GOLD.MEMBER_ENGAGEMENT g
-JOIN DPM_SRC_LOYALTY.SILVER.POINTS_DAILY p ON p.MEMBER_ID = g.MEMBER_ID
-GROUP BY 1, 2 HAVING g.TOTAL_POINTS_EARNED <> SUM(p.POINTS_EARNED);  -- expect zero rows
+-- referential integrity out of the fact table
+SELECT COUNT_IF(INDIVIDUAL_ID IS NULL) FROM DPM_CUSTOMER_360.GOLD.TRANSACTION;
+SELECT COUNT(*) FROM DPM_CUSTOMER_360.GOLD.TRANSACTION t
+  LEFT JOIN DPM_CUSTOMER_360.GOLD.PRODUCT p ON p.PRODUCT_ID = t.PRODUCT_ID
+ WHERE t.PRODUCT_ID IS NOT NULL AND p.PRODUCT_ID IS NULL;  -- expect 0
+
+-- BI reconciles against the gold facts
+SELECT COUNT(*) FROM DPM_CUSTOMER_360.BI.INDIVIDUAL_ENGAGEMENT e
+  LEFT JOIN (SELECT INDIVIDUAL_ID, SUM(POINTS_EARNED) s
+             FROM DPM_CUSTOMER_360.GOLD.LOYALTY_DAILY GROUP BY 1) g
+    ON g.INDIVIDUAL_ID = e.INDIVIDUAL_ID
+ WHERE e.TOTAL_POINTS_EARNED <> COALESCE(g.s, 0);          -- expect 0
 ```
 
-The third and fourth are the hand-written versions of what
-`SCD2_INTEGRITY` and the reconciliation check assert. Running them by hand once
-after the deploy is worth it: it separates "the check is wrong" from "the
-pipeline is wrong" before anyone has to debug a red dashboard.
+Last deployed 2026-09-24. All nine passed, against 1,080 individuals resolved
+from 1,878 source records, 798 of them present in both CRM and loyalty.
 
 ## What the platform derives from this
 
-Ingesting this directory currently produces 33 proposals, including:
+66 proposals, with parity on 15 of 18 tables: layer parity at both hops for
+every source, composite keys where the grain is composite, the MERGE's own
+filter lifted onto the source side, parity against the SCD2 dimension
+restricted to `IS_CURRENT = TRUE`, `SCD2_INTEGRITY` keyed on the natural key
+taken from the MERGE, freshness from each task's own `SCHEDULE`, the column
+contract of every table, and a zero-tolerance null check per `NOT NULL` column.
 
-- layer parity at both hops for every source, with composite keys where the
-  grain is composite and the MERGE's own filter lifted onto the source side
-- parity against the SCD2 dimension restricted to `IS_CURRENT = TRUE`, which is
-  what makes "exactly once" true for a table that holds history
-- `SCD2_INTEGRITY` on `SILVER.MEMBERS`, keyed on the natural key taken from the
-  MERGE rather than the surrogate key
-- freshness from each writing task's own `SCHEDULE`
-- the column contract of every table
-- a zero-tolerance null check per `NOT NULL` column
-
-What it does **not** yet derive, and which the loyalty pipeline is here to drive
-out next: the data-quality section (null/blank/uniqueness/domain/range from a
-live profile — `TIER`, `STATUS` and `CHANNEL` are closed domains and
-`POINTS_EARNED` is non-negative by contract), aggregate reconciliation for
-`MEMBER_ENGAGEMENT`, referential integrity from gold back to the dimension, and
-the cursor-state reconciliation that `BRONZE.CURSOR_STATE` exists for.
+Still not derived, and what this pipeline exists to drive out next: the
+data-quality section (`TIER`, `STATUS`, `CATEGORY` and `CHANNEL` are closed
+domains; `POINTS_EARNED` is non-negative by contract), aggregate reconciliation
+for `BI.INDIVIDUAL_ENGAGEMENT`, referential integrity out of
+`GOLD.TRANSACTION`, the identity assertions above, and the cursor-state
+reconciliation `BRONZE.CURSOR_STATE` exists for.

@@ -17,7 +17,8 @@
 CREATE OR REPLACE PROCEDURE DPM_LOYALTY_360.GOLD.SP_GENERATE_LOYALTY_DATA(
   "NUM_NEW_MEMBERS" NUMBER,
   "NUM_UPDATES" NUMBER,
-  "NUM_SNAPSHOT_DAYS" NUMBER
+  "NUM_SNAPSHOT_DAYS" NUMBER,
+  "NUM_DELETES" NUMBER
 )
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -31,6 +32,7 @@ DECLARE
   next_seq INTEGER;
   rows_written INTEGER DEFAULT 0;
   snapshot_rows INTEGER DEFAULT 0;
+  deleted_rows INTEGER DEFAULT 0;
   existing_members INTEGER;
 BEGIN
   -- Sequence numbers are the source's change ordering, so they continue from
@@ -109,6 +111,37 @@ BEGIN
     END WHILE;
   END IF;
 
+  -- ---- existing members: CDC deletes --------------------------------------
+  -- The tombstone path. Without one of these the OP <> 'D' filter that the
+  -- whole MERGE-on-PK design turns on is never exercised, and a filter that is
+  -- never exercised is a filter nobody knows is wrong.
+  IF (existing_members > 0) THEN
+    i := 0;
+    WHILE (i < NUM_DELETES) DO
+      next_seq := next_seq + 1;
+
+      MERGE INTO DPM_SRC_LOYALTY.BRONZE.MEMBERS_RAW tgt
+      USING (
+        SELECT m.MEMBER_ID AS MEMBER_ID, 'D' AS OP, :next_seq AS SEQ_NO
+        FROM DPM_SRC_LOYALTY.BRONZE.MEMBERS_RAW m
+        WHERE m.OP <> 'D'
+        ORDER BY RANDOM()
+        LIMIT 1
+      ) src
+      ON tgt.MEMBER_ID = src.MEMBER_ID
+      WHEN MATCHED THEN UPDATE SET
+        OP = src.OP, SEQ_NO = src.SEQ_NO,
+        -- The payload is left as it was. A delete says the entity is gone, not
+        -- that its attributes changed, and blanking it would lose the last
+        -- known state that silver's closed version is supposed to preserve.
+        ETL_UPDATED_AT = CURRENT_TIMESTAMP();
+
+      deleted_rows := deleted_rows + 1;
+      rows_written := rows_written + 1;
+      i := i + 1;
+    END WHILE;
+  END IF;
+
   -- ---- daily point snapshots ----------------------------------------------
   -- One row per (member, day) for the trailing N days. Append-only: a day's
   -- figures are captured once and the series is the thing of value.
@@ -157,7 +190,8 @@ BEGIN
   WHEN NOT MATCHED THEN INSERT (TABLE_NAME, LAST_CURSOR, PAGES_LOADED, ROWS_LOADED, STATUS, UPDATED_AT)
     VALUES (src.TABLE_NAME, TO_VARCHAR(CURRENT_DATE()), 1, src.N, 'COMPLETED', CURRENT_TIMESTAMP());
 
-  RETURN 'Wrote ' || rows_written || ' member CDC event(s) and ' || snapshot_rows
+  RETURN 'Wrote ' || rows_written || ' member CDC event(s) (' || deleted_rows
+      || ' delete(s)) and ' || snapshot_rows
       || ' point snapshot row(s) into DPM_SRC_LOYALTY.BRONZE. '
       || 'The 1-minute tasks will propagate them to SILVER then GOLD.';
 END;
@@ -168,4 +202,4 @@ CREATE OR REPLACE TASK DPM_LOYALTY_360.GOLD.TASK_GENERATE_LOYALTY_DATA
   SCHEDULE = '60 MINUTE'
   COMMENT = 'Hourly loyalty test-data generator: CDC member events plus a trailing week of point snapshots'
 AS
-CALL DPM_LOYALTY_360.GOLD.SP_GENERATE_LOYALTY_DATA(3, 2, 7);
+CALL DPM_LOYALTY_360.GOLD.SP_GENERATE_LOYALTY_DATA(3, 2, 7, 1);

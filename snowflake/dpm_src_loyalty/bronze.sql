@@ -129,9 +129,16 @@ MERGE INTO DPM_SRC_LOYALTY.SILVER.MEMBERS tgt
 USING (
   SELECT
     s.MEMBER_ID AS MEMBER_ID,
+    s.OP AS OP,
     s.RAW_PAYLOAD:tier::STRING AS TIER,
     s.RAW_PAYLOAD:status::STRING AS STATUS,
-    s.ETL_LOADED_AT AS CHANGED_AT
+    -- ETL_UPDATED_AT, not ETL_LOADED_AT. On a MERGE-on-PK table only the
+    -- update timestamp moves when a change arrives; the load timestamp keeps
+    -- the value it got when the entity was first inserted. Closing a version
+    -- at its own VALID_FROM makes a zero-length window, so every member that
+    -- ever changed would report as a malformed window and a duplicate - the
+    -- pipeline behaving exactly as designed, with the check failing forever.
+    s.ETL_UPDATED_AT AS CHANGED_AT
   FROM DPM_SRC_LOYALTY.BRONZE.MEMBERS_RAW_STREAM s
   WHERE s.MEMBER_ID IS NOT NULL
   -- One row per member per batch: the newest change wins. PARTITION BY names
@@ -145,7 +152,15 @@ USING (
   ON tgt.MEMBER_ID IS NOT DISTINCT FROM src.MEMBER_ID
  AND tgt.IS_CURRENT = TRUE
 WHEN MATCHED
- AND (tgt.TIER IS DISTINCT FROM src.TIER OR tgt.STATUS IS DISTINCT FROM src.STATUS)
+ AND (
+      -- A tombstone closes the member outright: it is gone from the source, so
+      -- it must stop being current here. Without this arm a deleted member
+      -- keeps a live row in silver forever, and the parity check - which
+      -- filters the source to OP <> 'D' - reports it as a key silver invented.
+      src.OP = 'D'
+      OR tgt.TIER IS DISTINCT FROM src.TIER
+      OR tgt.STATUS IS DISTINCT FROM src.STATUS
+     )
 THEN UPDATE SET
   VALID_TO = src.CHANGED_AT,
   IS_CURRENT = FALSE,
@@ -164,7 +179,7 @@ USING (
     b.RAW_PAYLOAD:tier::STRING AS TIER,
     b.RAW_PAYLOAD:status::STRING AS STATUS,
     b.RAW_PAYLOAD:enrolled_date::DATE AS ENROLLED_DATE,
-    b.ETL_LOADED_AT AS CHANGED_AT
+    b.ETL_UPDATED_AT AS CHANGED_AT
   FROM DPM_SRC_LOYALTY.BRONZE.MEMBERS_RAW b
   -- The lifted filter. A tombstone is a real bronze row; it is simply not a
   -- member silver should carry as current.

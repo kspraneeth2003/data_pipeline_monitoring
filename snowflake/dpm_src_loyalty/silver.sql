@@ -23,6 +23,11 @@
 -- different bugs: (1) is the close step not running, (2) is it running against
 -- the wrong version, (3) is a lost batch, (4) is clock skew or a bad default.
 
+-- Repeated from bronze.sql on purpose. Both are idempotent, and either file
+-- has to be deployable first without the other having run.
+CREATE DATABASE IF NOT EXISTS DPM_SRC_LOYALTY
+  COMMENT = 'Loyalty source: CDC entity stream plus a daily point series';
+
 CREATE SCHEMA IF NOT EXISTS DPM_SRC_LOYALTY.SILVER;
 
 CREATE TABLE IF NOT EXISTS DPM_SRC_LOYALTY.SILVER.MEMBERS (

@@ -3,11 +3,12 @@ import { Link, matchPath, useLocation } from "react-router-dom";
 /**
  * Three modes, because the useful actions differ by altitude.
  *
- * Workspace level lists projects. Inside a
- * project the sections become its databases and incidents, and the primary action
- * is "Add database". Inside a database it becomes that database's checks, and
- * the primary action is "New check" - which only makes sense once there is a
- * database to run it against.
+ * Workspace level lists projects. Inside a project the first section is its
+ * checks, grouped by pipeline stage - databases are a section further along,
+ * not the way in, because a check is found by the hop it watches. Inside a
+ * database it becomes that database's checks, and the primary action is
+ * "New check", which only makes sense once there is a database to run it
+ * against.
  */
 export function TopNav() {
   const location = useLocation();
@@ -24,6 +25,7 @@ export function TopNav() {
   const base = inProject ? `/projects/${slug}` : "";
 
   const dbBase = `${base}/databases/${dbSlug}`;
+  const inProjectDatabases = inProject && location.pathname === `${base}/databases`;
 
   const links = inDatabase
     ? [
@@ -33,10 +35,11 @@ export function TopNav() {
       ]
     : inProject
       ? [
-          { href: base, label: "Databases", exact: true },
+          { href: base, label: "Checks", exact: true },
           { href: `${base}/incidents`, label: "Incidents" },
           { href: `${base}/changes`, label: "Changes" },
           { href: `${base}/connections`, label: "Connections" },
+          { href: `${base}/databases`, label: "Databases", exact: true },
           { href: `${base}/settings`, label: "Settings" },
         ]
       : [
@@ -79,14 +82,17 @@ export function TopNav() {
           >
             New check
           </Link>
-        ) : inProject ? (
+        ) : inProjectDatabases ? (
+          // Only offered on the databases page. On a page about checks, "Add
+          // database" is an answer to a question nobody there is asking, and
+          // it was the loudest thing on the screen.
           <Link
             to={`${base}/databases/new`}
             className="ml-auto bg-accent px-4 py-1.5 font-mono text-xs font-semibold uppercase tracking-[0.14em] text-accent-foreground transition-colors hover:bg-accent-hover"
           >
             Add database
           </Link>
-        ) : (
+        ) : inProject ? null : (
           <Link
             to="/projects/new"
             className="ml-auto bg-accent px-4 py-1.5 font-mono text-xs font-semibold uppercase tracking-[0.14em] text-accent-foreground transition-colors hover:bg-accent-hover"

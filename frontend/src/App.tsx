@@ -4,6 +4,7 @@ import { Projects } from "./pages/Projects";
 import { NewProject } from "./pages/NewProject";
 import { NewProjectManual } from "./pages/NewProjectManual";
 import { ProjectOverview } from "./pages/ProjectOverview";
+import { ProjectDatabases } from "./pages/ProjectDatabases";
 import { ProjectIncidents } from "./pages/ProjectIncidents";
 import { ProjectRevisions } from "./pages/ProjectRevisions";
 import { ProjectSettings } from "./pages/ProjectSettings";
@@ -19,6 +20,11 @@ import { EditCheck } from "./pages/EditCheck";
  * Routes mirror the hierarchy - project -> database -> check - so the URL
  * always says where you are and every level above is reachable by trimming the
  * path.
+ *
+ * A project opens on its checks, grouped by pipeline stage, rather than on its
+ * databases. The database is where a check is stored, not what it is about, and
+ * a parity check spans two of them - so /projects/:slug/databases is now a
+ * section of its own rather than the project's front door.
  *
  * Connections live inside a project too: connecting a warehouse is part of
  * setting a project up, not a separate administrative step done elsewhere.
@@ -37,6 +43,7 @@ export default function App() {
         <Route path="/projects/:slug/settings" element={<ProjectSettings />} />
         <Route path="/projects/:slug/connections" element={<ProjectConnections />} />
 
+        <Route path="/projects/:slug/databases" element={<ProjectDatabases />} />
         <Route path="/projects/:slug/databases/new" element={<NewDatabase />} />
         <Route path="/projects/:slug/databases/:dbSlug" element={<DatabaseChecks />} />
         <Route path="/projects/:slug/databases/:dbSlug/settings" element={<DatabaseSettings />} />

@@ -7,7 +7,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { RunNowButton } from "../components/RunNowButton";
 import { PinButton } from "../components/PinButton";
 import { STAGES, matchesQuery } from "../lib/stages";
-import { formatDateTime, relativeTime } from "../lib/time";
+import { formatDateTime } from "../lib/time";
 
 /**
  * A project, as its checks rather than as its databases.
@@ -32,7 +32,7 @@ export function ProjectOverview() {
 
   // The active tab lives in the URL so a link to "the bronze -> silver checks
   // of Customer 360" is a link, not a sequence of clicks.
-  const activeStage = (searchParams.get("stage") as CheckStage) ?? "BRONZE_TO_SILVER";
+  const requestedStage = searchParams.get("stage") as CheckStage | null;
 
   // Fetched independently rather than through one Promise.all. A rejected
   // checks request used to take the whole page down to "Not found", which says
@@ -80,14 +80,17 @@ export function ProjectOverview() {
     );
   }
 
-  // Unhealthy databases first, same rule as the projects list one level up.
-  const databases = [...project.databases].sort((a, b) => {
-    const rank = (d: typeof a) =>
-      d.health.erroring > 0 ? 0 : d.health.failing > 0 ? 1 : d.health.total_checks === 0 ? 3 : 2;
-    return rank(a) - rank(b) || a.name.localeCompare(b.name);
-  });
+  // Only the add-check picker needs these now; the grid of database cards has
+  // moved to its own page. Alphabetical, because a picker is read by name.
+  const databases = [...project.databases].sort((a, b) => a.name.localeCompare(b.name));
 
-  const stage = STAGES.find((s) => s.key === activeStage) ?? STAGES[3];
+  // With no tab named in the URL, open the first one in pipeline order that
+  // actually holds something. Landing on an empty "Stg -> Bronze" says this
+  // project is unmonitored when the checks are one tab to the right, and that
+  // is a worse first impression than any amount of tidiness is worth.
+  const firstPopulated = STAGES.find((s) => (byStage.get(s.key) ?? []).length > 0);
+  const stage =
+    (requestedStage && STAGES.find((s) => s.key === requestedStage)) ?? firstPopulated ?? STAGES[3];
   const stageChecks = byStage.get(stage.key) ?? [];
   const visible = stageChecks.filter((c) => matchesQuery(c, query));
 
@@ -129,7 +132,7 @@ export function ProjectOverview() {
 
       <div className="mb-8 grid gap-4 sm:grid-cols-4">
         {[
-          { label: "Databases", value: project.databases.length },
+          { label: "Databases", value: project.databases.length, to: `/projects/${slug}/databases` },
           { label: "Checks", value: project.health.total_checks },
           {
             label: "Needs attention",
@@ -161,7 +164,7 @@ export function ProjectOverview() {
         })}
       </div>
 
-      <section className="mb-10">
+      <section>
         {checksError && (
           <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
             <p className="font-medium">The checks could not be loaded, so the tabs below are empty.</p>
@@ -306,60 +309,6 @@ export function ProjectOverview() {
         )}
       </section>
 
-      <section>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-foreground">Databases</h2>
-          <Link to={`/projects/${slug}/databases/new`} className="text-sm text-accent hover:underline">
-            + Add a database
-          </Link>
-        </div>
-
-        {databases.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border bg-surface px-6 py-12 text-center">
-            <h3 className="text-base font-medium text-foreground">No databases yet</h3>
-            <p className="mx-auto mt-1 max-w-md text-sm text-zinc-500">
-              Add the databases this project spans — the source databases it reads and the ones it writes.
-              Checks live inside a database.
-            </p>
-            <Link
-              to={`/projects/${slug}/databases/new`}
-              className="mt-5 inline-block rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground shadow-sm transition-colors hover:bg-accent-hover"
-            >
-              Add a database
-            </Link>
-          </div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2">
-            {databases.map((database) => (
-              <Link
-                key={database.id}
-                to={`/projects/${slug}/databases/${database.slug}`}
-                className="group rounded-xl border border-border bg-surface p-5 transition-all hover:border-accent hover:shadow-sm"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <h3 className="font-mono text-sm font-medium text-foreground transition-colors group-hover:text-accent">
-                    {database.name}
-                  </h3>
-                  <HealthPill health={database.health} />
-                </div>
-                {database.description && (
-                  <p className="mt-2 line-clamp-2 text-sm text-zinc-500">{database.description}</p>
-                )}
-                <dl className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-zinc-500">
-                  <div className="flex gap-1">
-                    <dt>Checks</dt>
-                    <dd className="font-medium text-foreground">{database.health.total_checks}</dd>
-                  </div>
-                  <div className="flex gap-1">
-                    <dt>Last run</dt>
-                    <dd className="font-medium text-foreground">{relativeTime(database.health.last_run_at)}</dd>
-                  </div>
-                </dl>
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
     </main>
   );
 }

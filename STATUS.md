@@ -340,8 +340,10 @@ not a database - it spans the databases that together serve one domain.
 ```
 /                                              Projects, ranked worst-health first
 /projects/new                                  Create
-/projects/:slug                                Checks by stage (tabs, search, pins);
-                                                 databases below. ?stage=... selects a tab
+/projects/:slug                                Checks by stage (tabs, search, pins).
+                                                 ?stage=... selects a tab; with none named,
+                                                 opens on the first populated one
+/projects/:slug/databases                      The databases this project spans
 /projects/:slug/incidents                      Incidents, with the agent's comment stream
                                                  (each links out to its Jira issue)
 /projects/:slug/changes                        Proposed check changes awaiting review

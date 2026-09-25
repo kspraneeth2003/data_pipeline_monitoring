@@ -34,6 +34,8 @@ from app.ingest.heuristic import CheckProposal
 from app.maintenance.detector import ChangeReport
 from app.maintenance.prompts import MAINTENANCE_SYSTEM_PROMPT
 from app.maintenance.tools import build_tools
+from app.checks.stage import derive_stage, stage_for
+from app.checks.versions import record_version
 from app.models import CheckOrigin, CheckRevision, RevisionKind, RevisionStatus, cuid
 
 logger = logging.getLogger("dpm.maintenance.agent")
@@ -223,6 +225,11 @@ def apply_revision(db: Session, revision: CheckRevision, auto: bool = False) -> 
             check.config = revision.proposed_config
         check.origin = CheckOrigin.AGENT.value
         check.derived_at_commit = revision.triggered_by_commit
+        check.stage = stage_for(check.type, check.config, check.stage, check.stage_locked)
+        # The agent's edits are versioned on the same terms as a person's.
+        # An agent-applied change is exactly the kind somebody later needs to
+        # see the before-image of, since nobody watched it happen.
+        record_version(db, check, author="agent", note=revision.reason)
     elif revision.kind == RevisionKind.CREATE.value:
         database = revision.database
         db.add(
@@ -237,6 +244,9 @@ def apply_revision(db: Session, revision: CheckRevision, auto: bool = False) -> 
                 origin=CheckOrigin.AGENT.value,
                 derived_at_commit=revision.triggered_by_commit,
                 enabled=True,
+                stage=derive_stage(
+                    revision.proposed_type or "ROW_COUNT", revision.proposed_config or {}
+                ),
             )
         )
 

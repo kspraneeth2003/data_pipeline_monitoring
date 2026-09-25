@@ -7,6 +7,8 @@ from app import models, schemas
 from app.checks.config_schemas import CONFIG_SCHEMAS_BY_TYPE
 from app.checks.runner import execute_check
 from app.checks.sql import try_build_statements
+from app.checks.stage import stage_for
+from app.checks.versions import record_version
 from app.db import get_db
 from app.monitoring.incidents import utcnow
 from app.models import cuid
@@ -98,8 +100,11 @@ def create_check(payload: schemas.CheckCreate, db: Session = Depends(get_db)):
         connector_id=payload.connector_id,
         secondary_connector_id=payload.secondary_connector_id,
         config=config,
+        stage=stage_for(payload.type, config, None, locked=False),
     )
     db.add(check)
+    db.flush()
+    record_version(db, check, author="human", note="Created")
     db.commit()
     return _with_statements(_query_with_relations(db).filter(models.Check.id == check.id).first())
 
@@ -126,16 +131,30 @@ def update_check(check_id: str, payload: schemas.CheckUpdate, db: Session = Depe
         "enabled",
         "connector_id",
         "secondary_connector_id",
+        "pinned",
     ]:
         value = getattr(payload, field)
         if value is not None:
             setattr(check, field, value)
+
+    # An explicit stage in the payload is a person overruling the derivation,
+    # and that has to stick: re-deriving on the next config edit would move the
+    # check back to another tab with nothing in the record to explain it.
+    if payload.stage is not None:
+        check.stage = payload.stage
+        check.stage_locked = True
+    else:
+        check.stage = stage_for(effective_type, check.config, check.stage, check.stage_locked)
 
     # A person has now expressed intent about this check, so the maintenance
     # agent may no longer rewrite it without review. Stamped on any edit
     # rather than only on a config change: renaming a check or moving its
     # schedule is still someone deciding it should be this way.
     check.human_edited_at = utcnow()
+
+    # Before the commit, so a version can never record a change that failed to
+    # land. Returns None when only a description or the enabled flag moved.
+    record_version(db, check, author="human", note=payload.note)
 
     db.commit()
     return _with_statements(_query_with_relations(db).filter(models.Check.id == check_id).first())
@@ -149,6 +168,68 @@ def delete_check(check_id: str, db: Session = Depends(get_db)):
     db.delete(check)
     db.commit()
     return {"ok": True}
+
+
+@router.get("/{check_id}/versions", response_model=list[schemas.CheckVersionOut])
+def list_check_versions(check_id: str, db: Session = Depends(get_db)):
+    """The check's logic over time, newest first.
+
+    Newest first because the question asked of a history is almost always
+    "what changed recently", and a reader who wants the beginning can reach
+    the end of a short list.
+    """
+    if not db.query(models.Check.id).filter_by(id=check_id).first():
+        raise HTTPException(404, "Check not found")
+    return (
+        db.query(models.CheckVersion)
+        .filter_by(check_id=check_id)
+        .order_by(models.CheckVersion.version.desc())
+        .all()
+    )
+
+
+@router.post("/{check_id}/versions/{version}/restore", response_model=schemas.CheckOut)
+def restore_check_version(check_id: str, version: int, db: Session = Depends(get_db)):
+    """Put a past version's logic back, as a new version on top.
+
+    Never by rewinding: the versions between are what explain how the check got
+    into the state someone is backing out of, and deleting them would destroy
+    the reason the restore was needed.
+    """
+    check = db.query(models.Check).filter_by(id=check_id).first()
+    if not check:
+        raise HTTPException(404, "Check not found")
+
+    target = db.query(models.CheckVersion).filter_by(check_id=check_id, version=version).first()
+    if not target:
+        raise HTTPException(404, f"Check has no version {version}")
+
+    check.name = target.name
+    check.type = target.type
+    check.schedule = target.schedule
+    check.config = target.config
+    check.stage = stage_for(target.type, target.config, check.stage, check.stage_locked)
+    check.human_edited_at = utcnow()
+
+    record_version(db, check, author="human", note=f"Restored version {version}", force=True)
+    db.commit()
+    return _with_statements(_query_with_relations(db).filter(models.Check.id == check_id).first())
+
+
+@router.post("/{check_id}/pin", response_model=schemas.CheckOut)
+def set_check_pin(check_id: str, payload: schemas.CheckPin, db: Session = Depends(get_db)):
+    """Pin or unpin a check to the top of its stage.
+
+    Separate from PATCH so pinning from a list view does not stamp
+    `human_edited_at` - deciding to watch a check is not editing it, and
+    conflating the two would take it out of the maintenance agent's hands.
+    """
+    check = db.query(models.Check).filter_by(id=check_id).first()
+    if not check:
+        raise HTTPException(404, "Check not found")
+    check.pinned = payload.pinned
+    db.commit()
+    return _with_statements(_query_with_relations(db).filter(models.Check.id == check_id).first())
 
 
 @router.post("/{check_id}/run")

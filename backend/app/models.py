@@ -30,6 +30,26 @@ class CheckType(str, enum.Enum):
     SCD2_INTEGRITY = "SCD2_INTEGRITY"
 
 
+class CheckStage(str, enum.Enum):
+    """The pipeline hop a check watches, and the project page's top-level tabs.
+
+    Three of these name a movement between layers; the fourth is everything
+    asserted about one table on its own. That asymmetry is deliberate - it is
+    the only grouping under which a check belongs to exactly one tab. Origin
+    (derived, agent, human) is a second axis and stays a filter, because a
+    hand-written parity check is both, and tabs that overlap either duplicate
+    rows or hide them.
+
+    DATA_QUALITY is also the fallback for anything whose hop cannot be read
+    off its config. See `checks/stage.py` for why that beats an "unknown" bin.
+    """
+
+    STG_TO_BRONZE = "STG_TO_BRONZE"
+    BRONZE_TO_SILVER = "BRONZE_TO_SILVER"
+    SILVER_TO_GOLD = "SILVER_TO_GOLD"
+    DATA_QUALITY = "DATA_QUALITY"
+
+
 class RunStatus(str, enum.Enum):
     RUNNING = "RUNNING"
     PASSED = "PASSED"
@@ -221,6 +241,22 @@ class Check(Base):
     schedule: Mapped[str] = mapped_column(String)
     enabled: Mapped[bool] = mapped_column(default=True)
 
+    # Which hop this check watches, and so which project tab it appears under.
+    # Derived from the objects its config compares (`checks/stage.py`) on every
+    # write, unless `stage_locked` says a person put it somewhere on purpose.
+    stage: Mapped[str] = mapped_column(
+        String,
+        default=CheckStage.DATA_QUALITY.value,
+        server_default=CheckStage.DATA_QUALITY.value,
+        index=True,
+    )
+    stage_locked: Mapped[bool] = mapped_column(default=False, server_default="false")
+
+    # Kept at the top of its tab. Workspace-wide rather than per-viewer: there
+    # is no user table to hang a personal pin off, so a pin is a statement about
+    # the check ("this is the one we are watching"), not about who is looking.
+    pinned: Mapped[bool] = mapped_column(default=False, server_default="false")
+
     database_id: Mapped[str] = mapped_column(ForeignKey("databases.id", ondelete="CASCADE"), index=True)
 
     connector_id: Mapped[str] = mapped_column(ForeignKey("connectors.id"))
@@ -255,6 +291,9 @@ class Check(Base):
     )
     revisions: Mapped[list["CheckRevision"]] = relationship(
         back_populates="check", cascade="all, delete-orphan"
+    )
+    versions: Mapped[list["CheckVersion"]] = relationship(
+        back_populates="check", cascade="all, delete-orphan", order_by="CheckVersion.version"
     )
 
     @property
@@ -360,6 +399,70 @@ class CheckRevision(Base):
 
     check: Mapped["Check | None"] = relationship(back_populates="revisions")
     database: Mapped["Database"] = relationship()
+
+
+class CheckVersion(Base):
+    """Every state a check's logic has been in, and the SQL that state produced.
+
+    Two things needed this table. Editing a check used to overwrite it in
+    place, so "what did this assert last Tuesday" was unanswerable - and the
+    fields people reach for first, the parity filters and the per-side cast
+    expressions, are exactly the ones where a well-meant edit silently changes
+    what is being asserted. `CheckRevision` looks like it would cover this but
+    does not: it is the agent's proposal queue, and a human edit never went
+    through it.
+
+    The second is the stored SQL. `sql.py` still generates statements on read,
+    and that stays the source of truth for what runs - a stored copy consulted
+    at execution time would be a second truth that goes stale the first time a
+    builder changes. What is stored here is a *snapshot*: the SQL this config
+    rendered to at the moment it was saved. That is a record of the past, which
+    cannot go stale the way a live copy can, and it is what makes a version
+    diff readable - two configs side by side say much less than two queries do.
+
+    So: config changes -> a new version is written with freshly rendered SQL,
+    automatically. The reverse, editing SQL and having config follow, is not
+    implemented and is not a matter of wiring: it needs arbitrary SQL parsed
+    back into structured fields, which only works for SQL the generator itself
+    produced and fails silently the moment someone hand-edits a predicate.
+    """
+
+    __tablename__ = "check_versions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
+    check_id: Mapped[str] = mapped_column(ForeignKey("checks.id", ondelete="CASCADE"), index=True)
+
+    # Monotonic per check, starting at 1. A number rather than a timestamp
+    # because it is what the UI labels a version with and what a restore names.
+    version: Mapped[int] = mapped_column(Integer)
+
+    # The check as it stood at this version. Denormalised on purpose: a version
+    # that read through to the live check would change meaning when the check
+    # did, which is the whole thing this table exists to prevent.
+    name: Mapped[str] = mapped_column(String)
+    type: Mapped[str] = mapped_column(String)
+    schedule: Mapped[str] = mapped_column(String)
+    config: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+    # The rendered statements, and their concatenation for display and diffing.
+    # `statements_error` is populated instead when the config could not build -
+    # kept rather than refused, since a version that would have errored is
+    # itself worth being able to look back at.
+    statements: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    sql_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    statements_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Who caused this version: "human", "agent", "ingest" or "seed". Without it
+    # a history of twenty versions cannot answer the first question anyone asks
+    # of it, which is whether a person or the maintenance agent did this.
+    author: Mapped[str] = mapped_column(String, default="human")
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    check: Mapped["Check"] = relationship(back_populates="versions")
+
+    __table_args__ = (UniqueConstraint("check_id", "version", name="uq_check_versions_check_version"),)
 
 
 class Incident(Base):

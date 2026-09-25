@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app import models, schemas
+from app.checks.sql import try_build_statements
 from app.connectors.security import encrypt_config_secrets, redact_config_secrets
 from app.connectors.snowflake_connector import test_snowflake_connection
 from app.db import get_db
@@ -309,6 +310,41 @@ def delete_database(key: str, db_key: str, db: Session = Depends(get_db)):
     project = _resolve_project(db, key)
     db.delete(_resolve_database(db, project, db_key))
     db.commit()
+
+
+@router.get("/{key}/checks", response_model=list[schemas.CheckOut])
+def list_project_checks(key: str, db: Session = Depends(get_db)):
+    """Every check in the project, across all its databases.
+
+    The project page groups by stage, and a stage cuts across databases by
+    definition - a bronze-to-silver check compares two of them. Fetching per
+    database and stitching the lists together in the browser would mean N
+    requests to rebuild something the server can answer in one, and would make
+    the tab counts wrong for as long as any request was still in flight.
+
+    Statements are attached here too, so the Underlying SQL subtab has its
+    content without a second round trip.
+    """
+    project = _resolve_project(db, key)
+    checks = (
+        db.query(models.Check)
+        .options(
+            joinedload(models.Check.connector),
+            joinedload(models.Check.secondary_connector),
+            joinedload(models.Check.database).joinedload(models.Database.project),
+            joinedload(models.Check.runs),
+        )
+        .join(models.Database)
+        .filter(models.Database.project_id == project.id)
+        .order_by(models.Check.created_at)
+        .all()
+    )
+    _sorted_latest_run(checks)
+    for check in checks:
+        statements, error = try_build_statements(check.type, check.config)
+        check.statements = statements
+        check.statements_error = error
+    return checks
 
 
 @router.get("/{key}/databases/{db_key}/checks", response_model=list[schemas.CheckOut])

@@ -5,6 +5,8 @@ kept in sync with what's below, and configured connector credentials are
 preserved."""
 
 from app import models
+from app.checks.stage import stage_for
+from app.checks.versions import record_version
 from app.config import settings
 from app.db import SessionLocal
 from app.models import cuid
@@ -68,7 +70,15 @@ def upsert_check(db, id_: str, **fields) -> None:
         for key, value in fields.items():
             setattr(check, key, value)
     else:
-        db.add(models.Check(id=id_, **fields))
+        check = models.Check(id=id_, **fields)
+        db.add(check)
+
+    # Derived from the config every time rather than written into the seed
+    # literals: the seed is the standing test of the derivation rules, and a
+    # hand-written stage there would hide the case where they are wrong.
+    check.stage = stage_for(check.type, check.config, check.stage, bool(check.stage_locked))
+    db.flush()
+    record_version(db, check, author="seed", note="Seeded")
     db.commit()
 
 

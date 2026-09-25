@@ -29,6 +29,8 @@ from app.connectors.snowflake_connector import test_snowflake_connection
 from app.db import get_db
 from app.config import settings
 from app.checks.sql import try_build_statements
+from app.checks.stage import derive_stage
+from app.checks.versions import record_version
 from app.ingest import github, jobs
 from app.ingest.repo import RepoError, normalize_repo_url
 from app.routers.projects import (
@@ -151,6 +153,7 @@ def create_project_from_analysis(
         databases_by_name[proposed["name"]] = database
     db.flush()
 
+    created_checks: list[models.Check] = []
     for proposed in analysis["checks"]:
         if proposed["key"] not in selected_checks:
             continue
@@ -160,37 +163,45 @@ def create_project_from_analysis(
             # is the only coherent option - a check reaches its project through
             # its database, so one with no database has no place in the tree.
             continue
-        db.add(
-            models.Check(
-                database_id=database.id,
-                connector_id=connector.id,
-                name=proposed["name"],
-                description=proposed["description"],
-                # Kept as a column of its own as well as inside `derived_from`:
-                # the blob records what the proposal said, the column is the
-                # live explanation a reader sees and an editor may correct.
-                rationale=proposed["rationale"],
-                type=proposed["type"],
-                schedule=proposed["schedule"],
-                config=proposed["config"],
-                # Provenance, recorded at the moment the check is created
-                # because it cannot be reconstructed later. It is what lets
-                # the maintenance agent know this check is its own to update
-                # when the DDL moves - and, just as importantly, what marks
-                # every *other* check as one it must not touch.
-                origin=(
-                    models.CheckOrigin.AGENT.value
-                    if proposed.get("source") == "llm"
-                    else models.CheckOrigin.DERIVED.value
-                ),
-                derived_from={
-                    "key": proposed["key"],
-                    "rationale": proposed["rationale"],
-                    "source": proposed.get("source"),
-                },
-                derived_at_commit=analysis.get("repo_commit"),
-            )
+        check = models.Check(
+            database_id=database.id,
+            connector_id=connector.id,
+            name=proposed["name"],
+            description=proposed["description"],
+            # Kept as a column of its own as well as inside `derived_from`:
+            # the blob records what the proposal said, the column is the
+            # live explanation a reader sees and an editor may correct.
+            rationale=proposed["rationale"],
+            type=proposed["type"],
+            schedule=proposed["schedule"],
+            config=proposed["config"],
+            # Provenance, recorded at the moment the check is created
+            # because it cannot be reconstructed later. It is what lets
+            # the maintenance agent know this check is its own to update
+            # when the DDL moves - and, just as importantly, what marks
+            # every *other* check as one it must not touch.
+            origin=(
+                models.CheckOrigin.AGENT.value
+                if proposed.get("source") == "llm"
+                else models.CheckOrigin.DERIVED.value
+            ),
+            derived_from={
+                "key": proposed["key"],
+                "rationale": proposed["rationale"],
+                "source": proposed.get("source"),
+            },
+            derived_at_commit=analysis.get("repo_commit"),
+            stage=derive_stage(proposed["type"], proposed["config"]),
         )
+        db.add(check)
+        created_checks.append(check)
+
+    # Version 1 of every check the ingestion created, so a derived check has a
+    # baseline to diff against the first time somebody edits it. Needs the
+    # flush: `record_version` writes rows keyed on `check.id`.
+    db.flush()
+    for check in created_checks:
+        record_version(db, check, author="ingest", note="Derived from the repository")
 
     db.commit()
     db.refresh(project)

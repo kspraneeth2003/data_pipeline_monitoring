@@ -125,6 +125,18 @@ class CheckUpdate(BaseModel):
     connector_id: str | None = None
     secondary_connector_id: str | None = None
     config: dict[str, Any] | None = None
+    pinned: bool | None = None
+    # Setting this overrules the derived stage and locks it. Left unset, the
+    # stage is re-derived from the config being saved.
+    stage: str | None = None
+    # Why this edit was made, carried onto the version it produces. Optional,
+    # but a history where every entry says nothing is a list of timestamps.
+    note: str | None = None
+
+
+class CheckPin(BaseModel):
+    pinned: bool
+
 
 
 class ConnectorRef(BaseModel):
@@ -173,6 +185,31 @@ class CheckStatementOut(BaseModel):
     connection: str
 
 
+class CheckVersionOut(BaseModel):
+    """One past state of a check's logic, with the SQL it rendered to then.
+
+    `sql_text` is a snapshot taken when the version was saved, not a live
+    render - that is what makes it comparable across versions. See
+    `models.CheckVersion` for why it does not go stale the way a stored
+    live copy would.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    version: int
+    name: str
+    type: str
+    schedule: str
+    config: dict[str, Any]
+    statements: list[CheckStatementOut] | None = None
+    sql_text: str | None = None
+    statements_error: str | None = None
+    author: str
+    note: str | None = None
+    created_at: datetime
+
+
 class CheckOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -185,6 +222,10 @@ class CheckOut(BaseModel):
     type: str
     schedule: str
     enabled: bool
+    stage: str
+    stage_locked: bool = False
+    pinned: bool = False
+    origin: str
     database_id: str
     connector_id: str
     secondary_connector_id: str | None

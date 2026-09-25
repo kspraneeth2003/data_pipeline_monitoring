@@ -500,6 +500,25 @@ export type ProfileTargetDetail = ProfileTarget & {
 
 export type DiscoverResult = { added: string[]; already_profiled: string[]; tables: string[] };
 
+export type CatalogTable = {
+  object: string;
+  table: string;
+  /** From the warehouse's own metadata - no scan. */
+  row_count: number | null;
+  last_altered: string | null;
+  /** Null when this table is not profiled. */
+  target: ProfileTarget | null;
+};
+
+export type CatalogDatabase = {
+  id: string;
+  name: string;
+  slug: string;
+  readable: boolean;
+  error: string | null;
+  schemas: { name: string; tables: CatalogTable[] }[];
+};
+
 export const profilingApi = {
   listTargets: (slug: string) => request<ProfileTarget[]>(`/api/projects/${slug}/profiling`),
   createTarget: (slug: string, payload: { database_id: string; object: string; schedule?: string }) =>
@@ -507,10 +526,11 @@ export const profilingApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  discover: (slug: string, databaseId: string) =>
+  getCatalog: (slug: string) => request<CatalogDatabase[]>(`/api/projects/${slug}/profiling/catalog`),
+  discover: (slug: string, databaseId: string, schemaName?: string) =>
     request<DiscoverResult>(`/api/projects/${slug}/profiling/discover`, {
       method: "POST",
-      body: JSON.stringify({ database_id: databaseId }),
+      body: JSON.stringify({ database_id: databaseId, schema_name: schemaName ?? null }),
     }),
   getTarget: (id: string) => request<ProfileTargetDetail>(`/api/profiling/targets/${id}`),
   updateTarget: (id: string, payload: { enabled?: boolean; schedule?: string }) =>

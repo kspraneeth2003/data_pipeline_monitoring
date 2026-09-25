@@ -204,11 +204,16 @@ only that occurrence.
 Separate from checks and incidents on purpose: nothing in `models.py`,
 the check engine or triage changed. Profiles never write to Snowflake and
 never store a text value. Profile targets default to hourly - one full scan per
-run - and "Profile every table" adds a whole database at once.
+run. The Profiling page lists the warehouse's own catalog (read from
+`INFORMATION_SCHEMA.TABLES`, metadata only) so every table the project reaches
+is visible without typing names; profiling is one click per table, schema or
+database. A database the connection cannot read is listed with the reason
+rather than dropped, since an absent database reads as "nothing to profile".
 
+    GET    /api/projects/{slug}/profiling/catalog    every database > schema > table, live, + profile status
     GET    /api/projects/{slug}/profiling            tables + latest run + open count
     POST   /api/projects/{slug}/profiling/targets    add one (SCHEMA.TABLE or DB.SCHEMA.TABLE)
-    POST   /api/projects/{slug}/profiling/discover   add every base table in a database
+    POST   /api/projects/{slug}/profiling/discover   add every base table in a database (or one schema_name)
     GET    /api/profiling/targets/{id}               columns, 30-run history, anomalies
     PATCH  /api/profiling/targets/{id}               enabled / schedule
     DELETE /api/profiling/targets/{id}

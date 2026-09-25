@@ -85,11 +85,11 @@ def columns_sql(ref: TableRef) -> str:
 
 
 def tables_sql(database: str) -> str:
-    """Every base table in a database, for "profile all of it"."""
+    """Every base table in a database, with the warehouse's own row count - metadata, not a scan."""
     if not _IDENTIFIER.match(database):
         raise ValueError(f"{database!r} is not a plain identifier")
     return (
-        f"SELECT TABLE_SCHEMA, TABLE_NAME FROM {database.upper()}.INFORMATION_SCHEMA.TABLES "
+        f"SELECT TABLE_SCHEMA, TABLE_NAME, ROW_COUNT, LAST_ALTERED FROM {database.upper()}.INFORMATION_SCHEMA.TABLES "
         f"WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA <> 'INFORMATION_SCHEMA' "
         f"ORDER BY TABLE_SCHEMA, TABLE_NAME"
     )

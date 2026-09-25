@@ -123,7 +123,7 @@ export function ProfileTable() {
           </p>
           {detail.baseline_runs_needed > 0 && (
             <p className="mt-1 text-sm text-zinc-400">
-              Learning this table's normal: {detail.baseline_runs_needed} more run(s) before changes against history
+              Learning this table's normal: {detail.baseline_runs_needed} more run(s) before changes against its history
               are judged. Findings such as an all-NULL column are reported from the first run.
             </p>
           )}

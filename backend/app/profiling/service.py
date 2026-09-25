@@ -208,7 +208,7 @@ def run_profile(db: Session, target_id: str) -> ProfileRun:
         db.rollback()
         run = db.get(ProfileRun, run.id)
         run.status = ProfileRunStatus.ERROR.value
-        run.message = str(exc)[:2000]
+        run.message = explain_warehouse_error(exc, target.object.split(".")[0])[:2000]
         logger.warning("Profile of %s failed: %s", target.object, exc)
     finally:
         if connector is not None:
@@ -223,9 +223,45 @@ def run_profile(db: Session, target_id: str) -> ProfileRun:
 
 def list_tables(connector_type: str, connector_config: dict, database: str) -> list[str]:
     """Every base table in a database, fully qualified."""
+    return [t["object"] for t in list_catalog(connector_type, connector_config, database)]
+
+
+def list_catalog(connector_type: str, connector_config: dict, database: str) -> list[dict]:
+    """Every base table in a database, with the warehouse's own row count.
+
+    Read from `INFORMATION_SCHEMA.TABLES`, which is metadata: listing a
+    database this way costs no scan, however large its tables are.
+    """
     connector = build_connector(connector_type, connector_config)
     try:
         rows = connector.run_query(tables_sql(database))
     finally:
         connector.close()
-    return [f"{database.upper()}.{r['TABLE_SCHEMA']}.{r['TABLE_NAME']}" for r in rows]
+    return [
+        {
+            "object": f"{database.upper()}.{r['TABLE_SCHEMA']}.{r['TABLE_NAME']}",
+            "schema": str(r["TABLE_SCHEMA"]),
+            "table": str(r["TABLE_NAME"]),
+            "row_count": _int(r.get("ROW_COUNT")),
+            "last_altered": r.get("LAST_ALTERED"),
+        }
+        for r in rows
+    ]
+
+
+def explain_warehouse_error(exc: Exception, database: str) -> str:
+    """A warehouse error as a sentence a person can act on.
+
+    Snowflake reports a missing database and an ungranted one identically
+    ("does not exist or not authorized") - deliberately, so a role cannot probe
+    for names it may not see. Both have the same fix from here, so say that
+    instead of pasting the compiler's error code.
+    """
+    text = str(exc)
+    if "does not exist or not authorized" in text:
+        return (
+            f"This connection cannot read {database}. Either the database no longer exists, or the "
+            f"connection's role has not been granted it (GRANT USAGE ON DATABASE {database}, plus USAGE "
+            "on its schemas and SELECT on its tables)."
+        )
+    return text.split("\n")[-1][:500]

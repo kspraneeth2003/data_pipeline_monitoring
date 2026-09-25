@@ -161,7 +161,7 @@ def test_failed_profile_is_recorded_not_raised(env, monkeypatch):
     monkeypatch.setattr(warehouse, "run_query", boom)
     run = client.post(f"/api/profiling/targets/{target_id}/run").json()
     assert run["status"] == "ERROR"
-    assert "not authorized" in run["message"]
+    assert "cannot read DPM_SRC_INVENTORY" in run["message"]
 
 
 def test_validation(env):
@@ -183,3 +183,40 @@ def test_validation(env):
     assert client.patch(f"/api/profiling/targets/{target_id}", json={"enabled": False}).json()["enabled"] is False
     assert client.delete(f"/api/profiling/targets/{target_id}").status_code == 204
     assert client.get("/api/projects/p/profiling").json() == []
+
+
+def test_catalog_lists_every_table_and_marks_what_is_profiled(env):
+    client, _ = env
+    [database] = client.get("/api/projects/p/profiling/catalog").json()
+    assert database["readable"] is True
+    [schema] = database["schemas"]
+    assert schema["name"] == "SILVER"
+    assert [(t["table"], t["target"]) for t in schema["tables"]] == [("PRODUCTS", None)]
+
+    target_id = _add(client)
+    [database] = client.get("/api/projects/p/profiling/catalog").json()
+    assert database["schemas"][0]["tables"][0]["target"]["id"] == target_id
+
+
+def test_discover_can_be_limited_to_one_schema(env):
+    client, _ = env
+    none = client.post("/api/projects/p/profiling/discover", json={"database_id": "db-1", "schema_name": "GOLD"})
+    silver = client.post("/api/projects/p/profiling/discover", json={"database_id": "db-1", "schema_name": "silver"})
+    assert none.json()["added"] == []
+    assert silver.json()["added"] == ["DPM_SRC_INVENTORY.SILVER.PRODUCTS"]
+
+
+def test_unreadable_database_is_listed_with_a_reason_not_dropped(env, monkeypatch):
+    client, warehouse = env
+
+    def denied(sql):
+        raise RuntimeError(
+            "002003 (02000): 01c7: SQL compilation error:\nDatabase 'DPM_SRC_INVENTORY' does not exist or not authorized."
+        )
+
+    monkeypatch.setattr(warehouse, "run_query", denied)
+    [database] = client.get("/api/projects/p/profiling/catalog").json()
+    assert database["readable"] is False
+    assert database["schemas"] == []
+    assert "cannot read DPM_SRC_INVENTORY" in database["error"]
+    assert "002003" not in database["error"]

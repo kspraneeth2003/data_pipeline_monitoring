@@ -18,7 +18,7 @@ from app.profiling.models import (
     ProfileRunStatus,
     ProfileTarget,
 )
-from app.profiling.service import list_tables, run_profile
+from app.profiling.service import explain_warehouse_error, list_catalog, list_tables, run_profile
 from app.profiling.sql import parse_object
 
 router = APIRouter(prefix="/api", tags=["profiling"])
@@ -40,6 +40,8 @@ class TargetUpdate(BaseModel):
 
 class DiscoverRequest(BaseModel):
     database_id: str
+    # Limit to one schema; omitted means the whole database.
+    schema_name: str | None = None
 
 
 class RunOut(BaseModel):
@@ -112,6 +114,28 @@ class TargetDetailOut(TargetOut):
     columns: list[ColumnOut]
     history: list[HistoryPoint]
     anomalies: list[AnomalyOut]
+
+
+class CatalogTable(BaseModel):
+    object: str
+    table: str
+    row_count: int | None
+    last_altered: datetime | None
+    target: TargetOut | None
+
+
+class CatalogSchema(BaseModel):
+    name: str
+    tables: list[CatalogTable]
+
+
+class CatalogDatabase(BaseModel):
+    id: str
+    name: str
+    slug: str
+    readable: bool
+    error: str | None
+    schemas: list[CatalogSchema]
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -252,13 +276,59 @@ def discover_targets(slug: str, payload: DiscoverRequest, db: Session = Depends(
     try:
         tables = list_tables(database.connector.type, database.connector.config, database.name)
     except Exception as exc:  # noqa: BLE001 - surface the warehouse's reason, not a 500
-        raise HTTPException(502, f"Could not list tables in {database.name}: {exc}") from exc
+        raise HTTPException(502, explain_warehouse_error(exc, database.name)) from exc
+    if payload.schema_name:
+        prefix = f"{database.name.upper()}.{payload.schema_name.upper()}."
+        tables = [t for t in tables if t.startswith(prefix)]
     existing = set(db.scalars(select(ProfileTarget.object).where(ProfileTarget.database_id == database.id)).all())
     added = [t for t in tables if t not in existing]
     for name in added:
         db.add(ProfileTarget(database_id=database.id, object=name))
     db.commit()
     return {"added": added, "already_profiled": sorted(existing & set(tables)), "tables": tables}
+
+
+@router.get("/projects/{slug}/profiling/catalog", response_model=list[CatalogDatabase])
+def catalog(slug: str, db: Session = Depends(get_db)):
+    """Every database, schema and table in the project, and which are profiled.
+
+    Read live from each database's `INFORMATION_SCHEMA` - metadata only, no
+    scan - so the list is what the warehouse holds now rather than what was
+    added here by hand. A database the connection cannot read is still listed,
+    with the reason, rather than silently left out: an absent database reads
+    as "nothing to profile", which is the wrong conclusion.
+    """
+    project = _project_or_404(db, slug)
+    targets = {(t.database_id, t.object): t for t in _project_targets(db, project)}
+    out: list[CatalogDatabase] = []
+    for database in project.databases:
+        try:
+            tables = list_catalog(database.connector.type, database.connector.config, database.name)
+            error = None
+        except Exception as exc:  # noqa: BLE001 - one unreadable database must not blank the page
+            tables, error = [], explain_warehouse_error(exc, database.name)
+        schemas: dict[str, list[CatalogTable]] = {}
+        seen: set[str] = set()
+        for t in tables:
+            target = targets.get((database.id, t["object"]))
+            seen.add(t["object"])
+            schemas.setdefault(t["schema"], []).append(CatalogTable(
+                object=t["object"], table=t["table"], row_count=t["row_count"],
+                last_altered=t["last_altered"], target=_target_out(db, target) if target else None,
+            ))
+        # A profiled table the warehouse no longer lists is kept visible, so
+        # its history and last error are still reachable.
+        for (db_id, obj), target in targets.items():
+            if db_id == database.id and obj not in seen and not error:
+                schema_name, table_name = obj.split(".")[1:3]
+                schemas.setdefault(schema_name, []).append(CatalogTable(
+                    object=obj, table=table_name, row_count=None, last_altered=None, target=_target_out(db, target),
+                ))
+        out.append(CatalogDatabase(
+            id=database.id, name=database.name, slug=database.slug, readable=error is None, error=error,
+            schemas=[CatalogSchema(name=s, tables=v) for s, v in sorted(schemas.items())],
+        ))
+    return out
 
 
 @router.get("/profiling/targets/{target_id}", response_model=TargetDetailOut)

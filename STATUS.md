@@ -173,6 +173,57 @@ before parent task, tables before streams before tasks) and the by-hand
 validation queries. `ioi/` picks them up on the next `dump_ddl.py` run after
 that; until then the dump skips them with a `!!` line.
 
+### Column profiling and anomaly detection (`backend/app/profiling/`)
+
+The answer to "a check derived from the code always agrees with the code".
+A profile measures the data itself - per column: null rate, approximate
+distinct count, blank strings, numeric min/max/mean, text *lengths*, temporal
+bounds - and compares each number with that column's own history. It needs no
+rules and no DDL, so it sees faults the pipeline's code agrees with.
+
+Two layers, and the split is load-bearing:
+
+- **Findings** need no history: a column NULL on every row of a populated
+  table, a timestamp in the future, an empty table. This is what catches
+  `WAREHOUSE_ID` - it has been 100% NULL since deploy, so a history-only
+  detector would learn that as normal. Verified live: the first profile of
+  `DPM_SRC_INVENTORY.SILVER.PRODUCTS` (3,462 rows, 5s) raised exactly one
+  finding, on `WAREHOUSE_ID`.
+- **Anomalies** need at least `MIN_HISTORY` (5) prior runs and are judged
+  against median and MAD, with a floor per metric so a flat series does not
+  alert on noise. Row volume is judged on the *change* between runs, so an
+  append-only table growing is not an anomaly and rows disappearing from one
+  is HIGH. Schema moves (column added/removed/retyped) are compared with the
+  previous run.
+
+"Active" means present on the table's latest successful run, so an anomaly
+clears itself when the data recovers. Acknowledging a *finding* carries
+forward ("this column is meant to be empty"); acknowledging an anomaly hides
+only that occurrence.
+
+Separate from checks and incidents on purpose: nothing in `models.py`,
+the check engine or triage changed. Profiles never write to Snowflake and
+never store a text value. Profile targets default to hourly - one full scan per
+run - and "Profile every table" adds a whole database at once.
+
+    GET    /api/projects/{slug}/profiling            tables + latest run + open count
+    POST   /api/projects/{slug}/profiling/targets    add one (SCHEMA.TABLE or DB.SCHEMA.TABLE)
+    POST   /api/projects/{slug}/profiling/discover   add every base table in a database
+    GET    /api/profiling/targets/{id}               columns, 30-run history, anomalies
+    PATCH  /api/profiling/targets/{id}               enabled / schedule
+    DELETE /api/profiling/targets/{id}
+    POST   /api/profiling/targets/{id}/run
+    GET    /api/projects/{slug}/anomalies            what is true now, worst first
+    POST   /api/profiling/anomalies/{id}/acknowledge
+
+UI: `/projects/:slug/profiling` and `/projects/:slug/profiling/:targetId`
+(sparklines per column). Migration `f1a2b3c4d5e6` adds four tables and
+touches none; run `uv run alembic upgrade head` after pulling.
+
+Not yet: anomalies do not open incidents or reach Jira - they live on the
+Profiling page only. Promoting a HIGH anomaly to an incident is the obvious
+next step, and was left out so this could land without touching triage.
+
 ### SCD2 integrity (`backend/app/checks/scd2.py`)
 
 The first check in the advanced section. Four assertions, evaluated in one

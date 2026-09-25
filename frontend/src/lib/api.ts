@@ -417,3 +417,110 @@ export const api = {
   rejectRevision: (id: string) =>
     request<CheckRevision>(`/api/revisions/${id}/reject`, { method: "POST" }),
 };
+
+// --- Profiling --------------------------------------------------------------
+//
+// Column profiles and the anomalies found in them. Kept as its own client
+// object so the feature is additive: nothing above this line changed shape.
+
+export type ProfileRun = {
+  id: string;
+  status: "RUNNING" | "SUCCEEDED" | "ERROR";
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  row_count: number | null;
+  column_count: number | null;
+  anomaly_count: number;
+  message: string | null;
+};
+
+export type ProfileTarget = {
+  id: string;
+  object: string;
+  schedule: string;
+  enabled: boolean;
+  database: { id: string; name: string; slug: string };
+  last_run: ProfileRun | null;
+  successful_runs: number;
+  /** Successful runs still needed before history anomalies are judged. */
+  baseline_runs_needed: number;
+  open_anomalies: number;
+};
+
+export type AnomalySeverity = "HIGH" | "MEDIUM" | "LOW";
+
+export type ProfileAnomaly = {
+  id: string;
+  target_id: string;
+  object: string;
+  database_slug: string;
+  run_id: string;
+  column_name: string | null;
+  /** ANOMALY: against history. FINDING: true of one run. SCHEMA: columns moved. */
+  kind: "ANOMALY" | "FINDING" | "SCHEMA";
+  metric: string;
+  severity: AnomalySeverity;
+  observed: number | null;
+  expected: number | null;
+  lower: number | null;
+  upper: number | null;
+  message: string;
+  acknowledged_at: string | null;
+  created_at: string;
+};
+
+export type ColumnProfile = {
+  column_name: string;
+  data_type: string;
+  family: "NUMERIC" | "TEXT" | "TEMPORAL" | "BOOLEAN" | "OTHER";
+  ordinal: number;
+  row_count: number;
+  null_count: number;
+  null_ratio: number | null;
+  distinct_count: number | null;
+  blank_count: number | null;
+  min_value: string | null;
+  max_value: string | null;
+  mean_numeric: number | null;
+};
+
+export type ProfileHistoryPoint = {
+  run_id: string;
+  at: string;
+  row_count: number | null;
+  columns: Record<string, { null_ratio: number | null; distinct_count: number | null; mean: number | null }>;
+};
+
+export type ProfileTargetDetail = ProfileTarget & {
+  columns: ColumnProfile[];
+  history: ProfileHistoryPoint[];
+  anomalies: ProfileAnomaly[];
+};
+
+export type DiscoverResult = { added: string[]; already_profiled: string[]; tables: string[] };
+
+export const profilingApi = {
+  listTargets: (slug: string) => request<ProfileTarget[]>(`/api/projects/${slug}/profiling`),
+  createTarget: (slug: string, payload: { database_id: string; object: string; schedule?: string }) =>
+    request<ProfileTarget>(`/api/projects/${slug}/profiling/targets`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  discover: (slug: string, databaseId: string) =>
+    request<DiscoverResult>(`/api/projects/${slug}/profiling/discover`, {
+      method: "POST",
+      body: JSON.stringify({ database_id: databaseId }),
+    }),
+  getTarget: (id: string) => request<ProfileTargetDetail>(`/api/profiling/targets/${id}`),
+  updateTarget: (id: string, payload: { enabled?: boolean; schedule?: string }) =>
+    request<ProfileTarget>(`/api/profiling/targets/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteTarget: (id: string) => request<void>(`/api/profiling/targets/${id}`, { method: "DELETE" }),
+  runTarget: (id: string) => request<ProfileRun>(`/api/profiling/targets/${id}/run`, { method: "POST" }),
+  listAnomalies: (slug: string, includeAcknowledged = false) =>
+    request<ProfileAnomaly[]>(
+      `/api/projects/${slug}/anomalies${includeAcknowledged ? "?include_acknowledged=true" : ""}`,
+    ),
+  acknowledge: (id: string) =>
+    request<ProfileAnomaly>(`/api/profiling/anomalies/${id}/acknowledge`, { method: "POST" }),
+};

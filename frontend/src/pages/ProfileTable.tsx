@@ -1,0 +1,295 @@
+import { useCallback, useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+
+import { AnomalyList } from "../components/AnomalyList";
+import { Breadcrumbs } from "../components/Breadcrumbs";
+import { Sparkline, type SparkPoint } from "../components/Sparkline";
+import { profilingApi, type ColumnProfile, type ProfileTargetDetail } from "../lib/api";
+import { formatDateTime, relativeTime } from "../lib/time";
+
+/**
+ * One table's profile: every column's current numbers, how they have moved,
+ * and what was flagged.
+ *
+ * The column table is the primary view and doubles as the data view for the
+ * sparklines - each trend sits next to the exact current value it ends at.
+ * Text columns show lengths, not values: the profile never stores a value
+ * from a text column, so there is nothing else it could show.
+ */
+
+const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+const num = (v: number) =>
+  Math.abs(v) >= 1000 || Number.isInteger(v) ? Math.round(v).toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+function rangeText(c: ColumnProfile): string {
+  if (c.min_value === null && c.max_value === null) return "—";
+  if (c.min_value === c.max_value) return c.min_value ?? "—";
+  return `${c.min_value ?? "?"} → ${c.max_value ?? "?"}`;
+}
+
+export function ProfileTable() {
+  const { slug = "", targetId = "" } = useParams();
+  const navigate = useNavigate();
+  const [detail, setDetail] = useState<ProfileTargetDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [showAcknowledged, setShowAcknowledged] = useState(false);
+
+  const load = useCallback(() => {
+    profilingApi
+      .getTarget(targetId)
+      .then((d) => {
+        setDetail(d);
+        setError(null);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Could not load this table"));
+  }, [targetId]);
+
+  useEffect(load, [load]);
+
+  if (error) return <div className="mx-auto max-w-6xl px-6 py-8 text-sm text-amber-400">{error}</div>;
+  if (!detail) return <div className="mx-auto max-w-6xl px-6 py-8 text-sm text-zinc-500">Loading…</div>;
+
+  const run = detail.last_run;
+  const latestRunId = detail.history[detail.history.length - 1]?.run_id;
+  const flaggedRuns = (column: string | null, metrics: string[]) =>
+    new Set(detail.anomalies.filter((a) => a.column_name === column && metrics.includes(a.metric)).map((a) => a.run_id));
+
+  const series = (column: string, key: "null_ratio" | "distinct_count" | "mean", metrics: string[]): SparkPoint[] => {
+    const flagged = flaggedRuns(column, metrics);
+    return detail.history.map((h) => ({
+      at: h.at,
+      value: h.columns[column]?.[key] ?? null,
+      flagged: flagged.has(h.run_id),
+    }));
+  };
+
+  const rowFlags = flaggedRuns(null, ["row_volume", "row_count"]);
+  const rowSeries: SparkPoint[] = detail.history.map((h) => ({
+    at: h.at,
+    value: h.row_count,
+    flagged: rowFlags.has(h.run_id),
+  }));
+
+  // "Current" is what the latest successful profile found; older ones are history.
+  const current = detail.anomalies.filter((a) => a.run_id === latestRunId && (showAcknowledged || !a.acknowledged_at));
+  const past = detail.anomalies.filter((a) => a.run_id !== latestRunId);
+
+  const runNow = async () => {
+    setRunning(true);
+    try {
+      await profilingApi.runTarget(detail.id);
+    } finally {
+      setRunning(false);
+      load();
+    }
+  };
+
+  const togglePaused = async () => {
+    await profilingApi.updateTarget(detail.id, { enabled: !detail.enabled });
+    load();
+  };
+
+  const remove = async () => {
+    if (!window.confirm(`Stop profiling ${detail.object} and delete its profile history? This cannot be undone.`)) return;
+    await profilingApi.deleteTarget(detail.id);
+    navigate(`/projects/${slug}/profiling`);
+  };
+
+  const acknowledge = async (id: string) => {
+    await profilingApi.acknowledge(id);
+    load();
+  };
+
+  return (
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <Breadcrumbs
+        items={[
+          { label: slug, to: `/projects/${slug}` },
+          { label: "Profiling", to: `/projects/${slug}/profiling` },
+          { label: detail.object },
+        ]}
+      />
+
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="font-mono text-lg text-foreground">{detail.object}</h1>
+          <p className="mt-1 text-sm text-zinc-500">
+            {run
+              ? `Last profiled ${relativeTime(run.finished_at ?? run.started_at)} · ${run.message ?? run.status}`
+              : "Not profiled yet."}
+            {" · "}schedule <span className="font-mono">{detail.schedule}</span>
+            {detail.enabled ? "" : " · paused"}
+          </p>
+          {detail.baseline_runs_needed > 0 && (
+            <p className="mt-1 text-sm text-zinc-400">
+              Learning this table's normal: {detail.baseline_runs_needed} more run(s) before changes against history
+              are judged. Findings such as an all-NULL column are reported from the first run.
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <button
+            type="button"
+            onClick={runNow}
+            disabled={running}
+            className="bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent-hover disabled:opacity-50"
+          >
+            {running ? "Profiling…" : "Run now"}
+          </button>
+          <button
+            type="button"
+            onClick={togglePaused}
+            className="border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:border-accent"
+          >
+            {detail.enabled ? "Pause" : "Resume"}
+          </button>
+          <button
+            type="button"
+            onClick={remove}
+            className="border border-border px-3 py-1.5 text-sm text-zinc-400 transition-colors hover:border-red-500 hover:text-red-400"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {run?.status === "ERROR" && (
+        <p className="mt-4 border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+          The last profile failed: {run.message}
+        </p>
+      )}
+
+      <section className="mt-6">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">Now · {current.length}</h2>
+          <label className="flex items-center gap-2 text-xs text-zinc-500">
+            <input type="checkbox" checked={showAcknowledged} onChange={(e) => setShowAcknowledged(e.target.checked)} />
+            Show acknowledged
+          </label>
+        </div>
+        <AnomalyList
+          anomalies={current}
+          slug={slug}
+          showTable={false}
+          onAcknowledge={acknowledge}
+          empty="Nothing unusual on the latest profile."
+        />
+      </section>
+
+      <section className="mt-8">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">
+            Columns · {detail.columns.length}
+          </h2>
+          <span className="flex items-center gap-2 text-xs text-zinc-500">
+            Rows over {rowSeries.length} run(s)
+            <Sparkline points={rowSeries} format={num} label="Row count" />
+          </span>
+        </div>
+        {detail.columns.length === 0 ? (
+          <p className="border border-border bg-surface px-4 py-6 text-sm text-zinc-500">
+            No successful profile yet. Run one to see this table's columns.
+          </p>
+        ) : (
+          <div className="overflow-x-auto border border-border bg-surface">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
+                  <th className="px-4 py-2.5 font-normal">Column</th>
+                  <th className="px-4 py-2.5 font-normal">Null</th>
+                  <th className="px-4 py-2.5 font-normal">Null trend</th>
+                  <th className="px-4 py-2.5 font-normal">Distinct</th>
+                  <th className="px-4 py-2.5 font-normal">Blank</th>
+                  <th className="px-4 py-2.5 font-normal">Range</th>
+                  <th className="px-4 py-2.5 font-normal">Mean</th>
+                  <th className="px-4 py-2.5 font-normal">Mean trend</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.columns.map((c) => {
+                  const flagged = current.some((a) => a.column_name === c.column_name);
+                  const nonNull = c.row_count - c.null_count;
+                  return (
+                    <tr key={c.column_name} className="border-t border-border align-middle">
+                      <td className="px-4 py-2.5">
+                        <span className="font-mono text-sm text-foreground">{c.column_name}</span>
+                        {flagged && <span className="ml-2 font-mono text-[11px] text-red-400">flagged</span>}
+                        <p className="font-mono text-[11px] text-zinc-500">{c.data_type.toLowerCase()}</p>
+                      </td>
+                      <td
+                        className={`px-4 py-2.5 font-mono text-sm ${
+                          c.null_ratio === 1 && c.row_count > 0 ? "text-red-400" : "text-foreground"
+                        }`}
+                      >
+                        {c.null_ratio === null ? "—" : pct(c.null_ratio)}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <Sparkline
+                          points={series(c.column_name, "null_ratio", ["null_ratio", "all_null"])}
+                          format={pct}
+                          label={`${c.column_name} null rate`}
+                        />
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-sm text-foreground">
+                        {c.distinct_count === null ? "—" : c.distinct_count.toLocaleString()}
+                        {c.distinct_count !== null && nonNull > 0 && (
+                          <span className="ml-1 text-[11px] text-zinc-500">
+                            ({pct(Math.min(c.distinct_count / nonNull, 1))})
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-sm text-foreground">
+                        {c.blank_count === null || nonNull === 0 ? "—" : pct(c.blank_count / nonNull)}
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-xs text-foreground">{rangeText(c)}</td>
+                      <td className="px-4 py-2.5 font-mono text-sm text-foreground">
+                        {c.mean_numeric === null
+                          ? "—"
+                          : c.family === "BOOLEAN"
+                            ? `${pct(c.mean_numeric)} true`
+                            : c.family === "TEXT"
+                              ? `${c.mean_numeric.toFixed(1)} chars`
+                              : num(c.mean_numeric)}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {c.family === "NUMERIC" || c.family === "TEXT" || c.family === "BOOLEAN" ? (
+                          <Sparkline
+                            points={series(c.column_name, "mean", ["mean", "mean_length", "true_ratio"])}
+                            format={c.family === "BOOLEAN" ? pct : num}
+                            label={`${c.column_name} mean`}
+                          />
+                        ) : (
+                          <span className="text-zinc-600">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="mt-2 text-xs text-zinc-500">
+          Text columns are profiled by length only - no value from a text column is ever stored. Distinct counts are
+          approximate (±2%).
+        </p>
+      </section>
+
+      {past.length > 0 && (
+        <section className="mt-8">
+          <h2 className="mb-2 font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">Earlier runs</h2>
+          <ul className="divide-y divide-border border border-border bg-surface">
+            {past.slice(0, 30).map((a) => (
+              <li key={a.id} className="px-4 py-2.5 text-sm">
+                <span className="font-mono text-xs text-zinc-500">{formatDateTime(a.created_at)}</span>{" "}
+                <span className="font-mono text-xs text-zinc-400">{a.severity}</span>{" "}
+                <span className="text-foreground">{a.message}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}

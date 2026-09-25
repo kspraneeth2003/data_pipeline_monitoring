@@ -15,6 +15,8 @@ import { ProjectConnections } from "./pages/ProjectConnections";
 import { CheckDetail } from "./pages/CheckDetail";
 import { NewCheck } from "./pages/NewCheck";
 import { EditCheck } from "./pages/EditCheck";
+import { ProjectProfiling } from "./pages/ProjectProfiling";
+import { ProfileTable } from "./pages/ProfileTable";
 
 /**
  * Routes mirror the hierarchy - project -> database -> check - so the URL
@@ -40,6 +42,8 @@ export default function App() {
         <Route path="/projects/:slug" element={<ProjectOverview />} />
         <Route path="/projects/:slug/incidents" element={<ProjectIncidents />} />
         <Route path="/projects/:slug/changes" element={<ProjectRevisions />} />
+        <Route path="/projects/:slug/profiling" element={<ProjectProfiling />} />
+        <Route path="/projects/:slug/profiling/:targetId" element={<ProfileTable />} />
         <Route path="/projects/:slug/settings" element={<ProjectSettings />} />
         <Route path="/projects/:slug/connections" element={<ProjectConnections />} />
 

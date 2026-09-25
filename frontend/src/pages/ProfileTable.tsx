@@ -21,7 +21,23 @@ const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 const num = (v: number) =>
   Math.abs(v) >= 1000 || Number.isInteger(v) ? Math.round(v).toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
+/** Common cron shapes in words; anything else is shown as written. */
+function scheduleText(cron: string): string {
+  if (cron === "0 * * * *") return "hourly";
+  const everyN = /^\*\/(\d+) \* \* \* \*$/.exec(cron);
+  if (everyN) return `every ${everyN[1]} min`;
+  if (/^0 \d+ \* \* \*$/.test(cron)) return "daily";
+  return cron;
+}
+
+/** Warehouse timestamps to the minute - milliseconds are noise in a range. */
+const trimTime = (v: string | null) => (v && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(v) ? v.slice(0, 16) : v);
+
 function rangeText(c: ColumnProfile): string {
+  if (c.family === "TEMPORAL") {
+    const [lo, hi] = [trimTime(c.min_value), trimTime(c.max_value)];
+    return lo === hi ? (lo ?? "—") : `${lo ?? "?"} → ${hi ?? "?"}`;
+  }
   if (c.min_value === null && c.max_value === null) return "—";
   if (c.min_value === c.max_value) return c.min_value ?? "—";
   return `${c.min_value ?? "?"} → ${c.max_value ?? "?"}`;
@@ -115,16 +131,19 @@ export function ProfileTable() {
         <div>
           <h1 className="font-mono text-lg text-foreground">{detail.object}</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            {run
-              ? `Last profiled ${relativeTime(run.finished_at ?? run.started_at)} · ${run.message ?? run.status}`
-              : "Not profiled yet."}
-            {" · "}schedule <span className="font-mono">{detail.schedule}</span>
-            {detail.enabled ? "" : " · paused"}
+            {[
+              run?.row_count != null ? `${run.row_count.toLocaleString()} rows` : null,
+              run?.column_count != null ? `${run.column_count} columns` : null,
+              run ? `profiled ${relativeTime(run.finished_at ?? run.started_at)}` : "not profiled yet",
+              detail.enabled ? `runs ${scheduleText(detail.schedule)}` : "paused",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
           </p>
           {detail.baseline_runs_needed > 0 && (
-            <p className="mt-1 text-sm text-zinc-400">
-              Learning this table's normal: {detail.baseline_runs_needed} more run(s) before changes against its history
-              are judged. Findings such as an all-NULL column are reported from the first run.
+            <p className="mt-1 text-xs text-zinc-500">
+              Learning normal: {detail.successful_runs} of {detail.successful_runs + detail.baseline_runs_needed} runs.
+              Trends are judged once that is reached; findings like an all-NULL column are flagged from the first run.
             </p>
           )}
         </div>
@@ -182,10 +201,12 @@ export function ProfileTable() {
           <h2 className="font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">
             Columns · {detail.columns.length}
           </h2>
-          <span className="flex items-center gap-2 text-xs text-zinc-500">
-            Rows over {rowSeries.length} run(s)
-            <Sparkline points={rowSeries} format={num} label="Row count" />
-          </span>
+          {rowSeries.length > 1 && (
+            <span className="flex items-center gap-2 text-xs text-zinc-500">
+              Rows, last {rowSeries.length} runs
+              <Sparkline points={rowSeries} format={num} label="Row count" />
+            </span>
+          )}
         </div>
         {detail.columns.length === 0 ? (
           <p className="border border-border bg-surface px-4 py-6 text-sm text-zinc-500">
@@ -198,12 +219,12 @@ export function ProfileTable() {
                 <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
                   <th className="px-4 py-2.5 font-normal">Column</th>
                   <th className="px-4 py-2.5 font-normal">Null</th>
-                  <th className="px-4 py-2.5 font-normal">Null trend</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Trend</th>
                   <th className="px-4 py-2.5 font-normal">Distinct</th>
                   <th className="px-4 py-2.5 font-normal">Blank</th>
                   <th className="px-4 py-2.5 font-normal">Range</th>
                   <th className="px-4 py-2.5 font-normal">Mean</th>
-                  <th className="px-4 py-2.5 font-normal">Mean trend</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Trend</th>
                 </tr>
               </thead>
               <tbody>
@@ -242,8 +263,8 @@ export function ProfileTable() {
                       <td className="px-4 py-2.5 font-mono text-sm text-foreground">
                         {c.blank_count === null || nonNull === 0 ? "—" : pct(c.blank_count / nonNull)}
                       </td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-foreground">{rangeText(c)}</td>
-                      <td className="px-4 py-2.5 font-mono text-sm text-foreground">
+                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-foreground">{rangeText(c)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-sm text-foreground">
                         {c.mean_numeric === null
                           ? "—"
                           : c.family === "BOOLEAN"

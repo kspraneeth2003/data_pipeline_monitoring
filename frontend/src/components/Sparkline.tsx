@@ -31,7 +31,8 @@ export function Sparkline({
   const values = points.map((p) => p.value).filter((v): v is number => v !== null);
 
   if (values.length < 2) {
-    return <span className="font-mono text-[11px] text-zinc-500">{values.length ? "1 run" : "—"}</span>;
+    // One point is not a trend; say nothing rather than draw a dot.
+    return <span className="text-zinc-600">—</span>;
   }
 
   const min = Math.min(...values);

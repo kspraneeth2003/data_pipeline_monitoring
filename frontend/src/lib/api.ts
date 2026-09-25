@@ -267,6 +267,29 @@ export type Project = {
   databases: Database[];
 };
 
+/** The pipeline hop a check watches. Mirrors `models.CheckStage`. */
+export type CheckStage = "STG_TO_BRONZE" | "BRONZE_TO_SILVER" | "SILVER_TO_GOLD" | "DATA_QUALITY";
+
+/**
+ * One past state of a check's logic. `sql_text` is the SQL that version's
+ * config rendered to when it was saved, not a live render - that is what makes
+ * two versions comparable.
+ */
+export type CheckVersion = {
+  id: string;
+  version: number;
+  name: string;
+  type: string;
+  schedule: string;
+  config: Record<string, unknown>;
+  statements: CheckStatement[] | null;
+  sql_text: string | null;
+  statements_error: string | null;
+  author: string;
+  note: string | null;
+  created_at: string;
+};
+
 export type Check = {
   id: string;
   name: string;
@@ -277,6 +300,12 @@ export type Check = {
   type: string;
   schedule: string;
   enabled: boolean;
+  stage: CheckStage;
+  stage_locked: boolean;
+  pinned: boolean;
+  origin: string;
+  /** Set once a person edits the check; from then on the agent leaves it alone. */
+  human_edited_at: string | null;
   database_id: string;
   database: {
     id: string;
@@ -321,6 +350,11 @@ export const api = {
     request<void>(`/api/projects/${projectKey}/databases/${dbKey}`, { method: "DELETE" }),
   listDatabaseChecks: (projectKey: string, dbKey: string) =>
     request<Check[]>(`/api/projects/${projectKey}/databases/${dbKey}/checks`),
+  // Every check in the project, in one request. A stage cuts across databases
+  // by definition, so fetching per database would make the tab counts wrong
+  // for as long as any request was still in flight.
+  listProjectChecks: (projectKey: string) =>
+    request<Check[]>(`/api/projects/${projectKey}/checks`),
 
   discoverDatabases: (connectorId: string) =>
     request<string[]>(`/api/connectors/${connectorId}/databases`),
@@ -333,6 +367,13 @@ export const api = {
     request<Check>(`/api/checks/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteCheck: (id: string) => request<{ ok: true }>(`/api/checks/${id}`, { method: "DELETE" }),
   runCheck: (id: string) => request<{ run_id: string }>(`/api/checks/${id}/run`, { method: "POST" }),
+  listCheckVersions: (id: string) => request<CheckVersion[]>(`/api/checks/${id}/versions`),
+  restoreCheckVersion: (id: string, version: number) =>
+    request<Check>(`/api/checks/${id}/versions/${version}/restore`, { method: "POST" }),
+  // Separate from updateCheck so pinning does not stamp `human_edited_at` and
+  // take the check out of the maintenance agent's hands.
+  setCheckPin: (id: string, pinned: boolean) =>
+    request<Check>(`/api/checks/${id}/pin`, { method: "POST", body: JSON.stringify({ pinned }) }),
 
   getGitHubStatus: () => request<GitHubStatus>("/api/github/status"),
   listGitHubRepositories: () => request<GitHubRepository[]>("/api/github/repositories"),

@@ -90,8 +90,61 @@ its first run, which is worth learning during review.
 
 Surfaced at `GET /api/checks` and `/api/checks/{id}` (`statements`,
 `statements_error`), on ingest proposals at `GET /api/ingest/{job_id}`, and
-rendered by `frontend/src/components/CheckExplanation.tsx` on the check detail
-page and inline in the setup wizard's review step.
+rendered by `frontend/src/components/CheckExplanation.tsx` - behind the
+**Underlying SQL** subtab on the check detail page, and inline in the setup
+wizard's review step, where a proposal approved without its SQL is a check
+nobody read.
+
+### Stage, and why a check is not filed under a database (`checks/stage.py`)
+
+The project page groups checks by the pipeline hop they watch - `STG_TO_BRONZE`,
+`BRONZE_TO_SILVER`, `SILVER_TO_GOLD`, `DATA_QUALITY` - because that is how a
+failure is reasoned about. The database a check's row lives in was always the
+wrong axis: a parity check compares two databases, so filing it under one of
+them is half a lie.
+
+`stage` is derived from the objects a check's config compares and stored on the
+row. Deriving it in the frontend was rejected: every list view would re-derive
+it, nothing could be filtered or counted server-side, and a bad guess could not
+be corrected. `stage_locked` records that a person overruled the derivation, so
+the next config edit does not silently move the check back.
+
+Origin (`DERIVED` / `AGENT` / `HUMAN`) is a **second axis and stays a filter**, not
+a fifth tab. A hand-written parity check is both derived-in-kind and custom, so
+tabs on origin would either duplicate rows or hide them.
+
+Only `DATA_QUALITY` has an add-check control. The three movement stages are
+populated by derivation from the pipeline's own definition - hand-writing one
+means transcribing a MERGE and then maintaining the transcription - so those
+tabs are for reviewing and tuning, and say so on screen rather than just
+omitting the button.
+
+### Version history, and the stored SQL (`checks/versions.py`, `check_versions`)
+
+A human edit used to overwrite the check in place, so "what did this assert
+last Tuesday" was unanswerable. `check_revisions` looks like it covers this and
+does not - it is the maintenance agent's proposal queue, and a UI edit never
+went through it.
+
+`check_versions` appends one row per change to a check's logic, from every write
+path (`human`, `agent`, `ingest`, `seed`), and carries the **SQL that config
+rendered to at the time**. Generation from config stays the source of truth for
+what executes; the stored text is a *snapshot*, which is a record of the past
+and so cannot go stale the way a live copy would. It is also what makes a
+version diff readable - two configs side by side say much less than two queries.
+
+Config -> SQL is automatic on every write. **The reverse is not implemented**:
+editing SQL and having config follow needs arbitrary SQL parsed back into
+structured fields, which only works for SQL the generator itself produced and
+fails silently the moment someone hand-edits a predicate.
+
+Restore is applied as a new version on top, never by rewinding - the versions in
+between are what explain how the check got into the state being backed out of.
+
+Pinning (`POST /api/checks/{id}/pin`) is workspace-wide, not per-viewer: there is
+no user table to hang a personal pin off. Its endpoint is separate from `PATCH`
+so pinning does not stamp `human_edited_at` and take a derived check out of the
+agent's hands.
 
 ### The loyalty test pipeline, and what it is for (`snowflake/dpm_src_loyalty/`)
 
@@ -287,7 +340,8 @@ not a database - it spans the databases that together serve one domain.
 ```
 /                                              Projects, ranked worst-health first
 /projects/new                                  Create
-/projects/:slug                                Databases in this project, with health
+/projects/:slug                                Checks by stage (tabs, search, pins);
+                                                 databases below. ?stage=... selects a tab
 /projects/:slug/incidents                      Incidents, with the agent's comment stream
                                                  (each links out to its Jira issue)
 /projects/:slug/changes                        Proposed check changes awaiting review
@@ -297,6 +351,7 @@ not a database - it spans the databases that together serve one domain.
 /projects/:slug/databases/:dbSlug              Checks on this database
 /projects/:slug/databases/:dbSlug/settings     Describe, remove from project
 /projects/:slug/databases/:dbSlug/checks/...   new | :id | :id/edit
+                                                 :id takes ?tab=sql|versions|runs
 
 ```
 
@@ -700,7 +755,7 @@ npm run dev
 - No auth/RBAC on the web app yet (PLAN.md FR16) - anyone with network access can hit the API routes
 - Connector secret encryption uses a single symmetric key in `.env`, not a real secrets manager/KMS
 - The connector edit form (`PATCH /api/connectors/{id}`) exists as an API but has no frontend UI yet - editing credentials currently requires calling the API directly
-- The frontend still has no tests. The backend now has 68 (`cd backend && uv run pytest`) covering the parser's judgement calls, the derivation rules and their coverage report, the incident lifecycle, both agents' guard rails, and change detection against real git commits. Neither agent's *model* path is exercised by tests - what is tested is the code that decides what a model is allowed to do
+- The frontend still has no tests. The backend now has 155 (`cd backend && uv run pytest`) covering the parser's judgement calls, the derivation rules and their coverage report, the incident lifecycle, both agents' guard rails, and change detection against real git commits. Neither agent's *model* path is exercised by tests - what is tested is the code that decides what a model is allowed to do
 - Repo ingestion jobs live in memory, so `uvicorn --reload` drops an in-flight analysis; re-running is cheap because the git checkout is cached. It also assumes one process, as APScheduler already does
 - `ddl_parser` is lexical, not a real SQL grammar. It handles the Snowflake DDL shapes in `snowflake/` and the `GET_DDL` output in `ioi/`; a repo using dbt models, Jinja templating or `CREATE VIEW`-only definitions will parse to little or nothing (which surfaces as an explicit warning, not a silent empty success)
 - Access tokens for private repos are used for the fetch and discarded - there is no stored credential, so re-ingesting a private repo later means re-entering the token

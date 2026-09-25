@@ -50,6 +50,9 @@ export function CheckForm({
   const [secondaryConnectorId, setSecondaryConnectorId] = useState(initial?.secondary_connector_id ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Carried onto the version this edit produces. Optional, but a history
+  // where every entry says nothing is just a list of timestamps.
+  const [note, setNote] = useState("");
 
   const meta = useMemo(() => getCheckTypeMeta(type)!, [type]);
 
@@ -111,6 +114,7 @@ export function CheckForm({
         connector_id: connectorId,
         secondary_connector_id: meta.needsSecondaryConnector ? secondaryConnectorId : undefined,
         config,
+        ...(isEdit ? { note: note || undefined } : {}),
       };
 
       const result = isEdit ? await api.updateCheck(initial!.id, payload) : await api.createCheck(payload);
@@ -243,6 +247,20 @@ export function CheckForm({
           </label>
         ))}
       </fieldset>
+
+      {isEdit && (
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">
+            What changed, and why <span className="font-normal text-zinc-500">(optional)</span>
+          </span>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            className={inputClass}
+            placeholder="Shown against this edit in the check's version history."
+          />
+        </label>
+      )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 

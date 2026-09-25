@@ -226,6 +226,11 @@ class CheckOut(BaseModel):
     stage_locked: bool = False
     pinned: bool = False
     origin: str
+    # Set on any edit through the UI or API. Exposed because it is the line
+    # between a check the maintenance agent still keeps current and one it has
+    # been told to leave alone - a distinction the reader of a derived check
+    # needs and could not otherwise see.
+    human_edited_at: datetime | None = None
     database_id: str
     connector_id: str
     secondary_connector_id: str | None

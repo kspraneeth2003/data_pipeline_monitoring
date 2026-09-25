@@ -20,6 +20,21 @@ export function CheckExplanation({
 }) {
   return (
     <>
+      <CheckLogic rationale={rationale} />
+      <CheckSql statements={statements} statementsError={statementsError} />
+    </>
+  );
+}
+
+/**
+ * Why the check is worth asserting. Split out from `CheckExplanation` so the
+ * check detail page can put the SQL behind its own subtab while keeping the
+ * logic in view; the ingestion review still shows both together, because a
+ * proposal approved without its SQL is a check nobody read.
+ */
+export function CheckLogic({ rationale }: { rationale: string | null }) {
+  return (
+    <>
       <section className="mb-4 rounded-xl border border-border bg-surface p-4 shadow-sm">
         <h2 className="mb-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Logic</h2>
         {rationale ? (
@@ -36,7 +51,20 @@ export function CheckExplanation({
           </p>
         )}
       </section>
+    </>
+  );
+}
 
+/** The statements the check issues, exactly as the engine would run them. */
+export function CheckSql({
+  statements,
+  statementsError,
+}: {
+  statements: CheckStatement[];
+  statementsError: string | null;
+}) {
+  return (
+    <>
       <section className="mb-4 rounded-xl border border-border bg-surface p-4 shadow-sm">
         <h2 className="mb-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">SQL</h2>
         {statementsError ? (

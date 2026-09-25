@@ -27,19 +27,30 @@ export function ProjectOverview() {
   const [project, setProject] = useState<Project | null>(null);
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [checksError, setChecksError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
   // The active tab lives in the URL so a link to "the bronze -> silver checks
   // of Customer 360" is a link, not a sequence of clicks.
   const activeStage = (searchParams.get("stage") as CheckStage) ?? "BRONZE_TO_SILVER";
 
+  // Fetched independently rather than through one Promise.all. A rejected
+  // checks request used to take the whole page down to "Not found", which says
+  // the project does not exist - the one thing that was not wrong. The failure
+  // that produced it was an API the frontend had outrun, and blaming the
+  // project for it sent the reader looking in exactly the wrong place.
   const reload = useCallback(() => {
-    Promise.all([api.getProject(slug), api.listProjectChecks(slug)])
-      .then(([p, c]) => {
-        setProject(p);
+    api.getProject(slug).then(setProject).catch((e) => setError(e.message));
+    api
+      .listProjectChecks(slug)
+      .then((c) => {
         setChecks(c);
+        setChecksError(null);
       })
-      .catch((e) => setError(e.message));
+      .catch((e) => {
+        setChecks([]);
+        setChecksError(e.message);
+      });
   }, [slug]);
 
   useEffect(reload, [reload]);
@@ -151,6 +162,16 @@ export function ProjectOverview() {
       </div>
 
       <section className="mb-10">
+        {checksError && (
+          <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
+            <p className="font-medium">The checks could not be loaded, so the tabs below are empty.</p>
+            <p className="mt-1 text-amber-400/80">
+              {checksError}. The project itself is fine — if this says &ldquo;Not Found&rdquo;, the
+              backend is older than this page and needs restarting.
+            </p>
+          </div>
+        )}
+
         <div className="mb-4 flex flex-wrap gap-1 border-b border-border">
           {STAGES.map((s) => {
             const group = byStage.get(s.key) ?? [];

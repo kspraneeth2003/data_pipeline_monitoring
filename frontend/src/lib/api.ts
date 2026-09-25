@@ -498,7 +498,13 @@ export type ProfileTargetDetail = ProfileTarget & {
   anomalies: ProfileAnomaly[];
 };
 
-export type DiscoverResult = { added: string[]; already_profiled: string[]; tables: string[] };
+export type DiscoverResult = {
+  added: string[];
+  already_profiled: string[];
+  tables: string[];
+  /** How many started profiling immediately, in the background. */
+  queued: number;
+};
 
 export type CatalogTable = {
   object: string;
@@ -531,6 +537,11 @@ export const profilingApi = {
     request<DiscoverResult>(`/api/projects/${slug}/profiling/discover`, {
       method: "POST",
       body: JSON.stringify({ database_id: databaseId, schema_name: schemaName ?? null }),
+    }),
+  runAll: (slug: string, databaseId: string) =>
+    request<{ queued: number; targets: number }>(`/api/projects/${slug}/profiling/run-all`, {
+      method: "POST",
+      body: JSON.stringify({ database_id: databaseId }),
     }),
   getTarget: (id: string) => request<ProfileTargetDetail>(`/api/profiling/targets/${id}`),
   updateTarget: (id: string, payload: { enabled?: boolean; schedule?: string }) =>

@@ -18,6 +18,7 @@ from app.profiling.models import (
     ProfileRunStatus,
     ProfileTarget,
 )
+from app.profiling.scheduler import queue_now
 from app.profiling.service import explain_warehouse_error, list_catalog, list_tables, run_profile
 from app.profiling.sql import parse_object
 
@@ -282,10 +283,25 @@ def discover_targets(slug: str, payload: DiscoverRequest, db: Session = Depends(
         tables = [t for t in tables if t.startswith(prefix)]
     existing = set(db.scalars(select(ProfileTarget.object).where(ProfileTarget.database_id == database.id)).all())
     added = [t for t in tables if t not in existing]
-    for name in added:
-        db.add(ProfileTarget(database_id=database.id, object=name))
+    new_targets = [ProfileTarget(database_id=database.id, object=name) for name in added]
+    db.add_all(new_targets)
     db.commit()
-    return {"added": added, "already_profiled": sorted(existing & set(tables)), "tables": tables}
+    # Run them now rather than at the next top of the hour.
+    queued = queue_now([t.id for t in new_targets])
+    return {"added": added, "already_profiled": sorted(existing & set(tables)), "tables": tables, "queued": queued}
+
+
+@router.post("/projects/{slug}/profiling/run-all")
+def run_all(slug: str, payload: DiscoverRequest, db: Session = Depends(get_db)):
+    """Re-profile every enabled table in a database now, in the background."""
+    project = _project_or_404(db, slug)
+    database = next((d for d in project.databases if d.id == payload.database_id), None)
+    if database is None:
+        raise HTTPException(404, "Database not found in this project")
+    ids = list(db.scalars(
+        select(ProfileTarget.id).where(ProfileTarget.database_id == database.id, ProfileTarget.enabled.is_(True))
+    ).all())
+    return {"queued": queue_now(ids), "targets": len(ids)}
 
 
 @router.get("/projects/{slug}/profiling/catalog", response_model=list[CatalogDatabase])

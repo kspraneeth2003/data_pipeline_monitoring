@@ -19,6 +19,14 @@ logger = logging.getLogger("dpm.profiling")
 
 PREFIX = "profile:"
 
+# APScheduler drops a job that starts more than `misfire_grace_time` late,
+# and its default is one second - silently, with only a log warning. Every
+# hourly profile fires at minute 0, alongside the checks, so the worker pool
+# is busy exactly then and most profiles were being skipped. A profile that
+# runs a minute late is fine; one that never runs is not. `None` means "run
+# however late", and coalescing keeps a backlog to one pending run per table.
+_JOB_OPTIONS = {"misfire_grace_time": None, "coalesce": True, "max_instances": 1}
+
 
 def _run_profile_job(target_id: str) -> None:
     db = SessionLocal()
@@ -41,7 +49,7 @@ def _sync_profile_jobs() -> None:
             job = scheduler.get_job(job_id)
             # Re-add when the schedule changed, not only when missing -
             # otherwise editing a schedule would silently keep the old one.
-            if job and getattr(job, "name", None) == target.schedule:
+            if job and getattr(job, "name", None) == target.schedule and job.misfire_grace_time is None:
                 continue
             try:
                 trigger = CronTrigger.from_crontab(target.schedule)
@@ -50,7 +58,7 @@ def _sync_profile_jobs() -> None:
                 continue
             scheduler.add_job(
                 _run_profile_job, trigger, args=[target.id], id=job_id, name=target.schedule,
-                replace_existing=True, max_instances=1, coalesce=True,
+                replace_existing=True, **_JOB_OPTIONS,
             )
         for job in scheduler.get_jobs():
             if job.id.startswith(PREFIX) and job.id.removeprefix(PREFIX) not in wanted:
@@ -71,3 +79,24 @@ def start_profiling_jobs() -> None:
         _sync_profile_jobs()
     except Exception:
         logger.exception("Profiling jobs not scheduled yet - has `alembic upgrade head` been run?")
+
+
+def queue_now(target_ids: list[str]) -> int:
+    """Profile these targets immediately, in the background. Returns how many were queued.
+
+    "Profile all" used to add tables to the hourly schedule and stop there,
+    so they sat as "queued" until the next top of the hour - which reads as
+    broken. One-off jobs on the same scheduler run them now, a few at a time
+    (the scheduler's worker pool bounds how many Snowflake sessions open at
+    once), without holding the HTTP request open for the whole batch. Their
+    ids are distinct from the hourly `profile:` jobs, so neither replaces the
+    other. With the scheduler not running (tests, a one-off script) nothing
+    is queued and the hourly schedule remains the fallback.
+    """
+    if not scheduler.running:
+        return 0
+    for target_id in target_ids:
+        scheduler.add_job(
+            _run_profile_job, args=[target_id], id=f"profile-now:{target_id}", replace_existing=True, **_JOB_OPTIONS
+        )
+    return len(target_ids)

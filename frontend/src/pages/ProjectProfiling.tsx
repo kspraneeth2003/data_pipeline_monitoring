@@ -30,7 +30,14 @@ function LastProfile({ table }: { table: CatalogTable }) {
   const target = table.target;
   const run = target?.last_run;
   if (!target) return <span className="text-zinc-600">Not profiled</span>;
-  if (!run) return <span className="text-zinc-500">Queued</span>;
+  if (!run || run.status === "RUNNING") {
+    return (
+      <span className="inline-flex items-center gap-2 text-zinc-300">
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse bg-blue-500" />
+        Profiling…
+      </span>
+    );
+  }
 
   const failed = run.status === "ERROR";
   const learning = target.baseline_runs_needed > 0;
@@ -148,11 +155,15 @@ function DatabaseRows({
   const [busy, setBusy] = useState(false);
   const tables = database.schemas.flatMap((s) => s.tables);
   const remaining = tables.filter((t) => !t.target).length;
+  const profiled = tables.length - remaining;
 
+  // Both start profiling in the background right away; the page refreshes
+  // itself until the runs land.
   const profileAll = async () => {
     setBusy(true);
     try {
-      await profilingApi.discover(slug, database.id);
+      if (remaining > 0) await profilingApi.discover(slug, database.id);
+      else await profilingApi.runAll(slug, database.id);
     } finally {
       setBusy(false);
       onChanged();
@@ -170,15 +181,19 @@ function DatabaseRows({
                 {database.readable ? `${tables.length - remaining} of ${tables.length} profiled` : "not readable"}
               </span>
             </div>
-            {database.readable && remaining > 0 && (
+            {database.readable && tables.length > 0 && (
               <button
                 type="button"
                 onClick={profileAll}
                 disabled={busy}
-                title="Adds every remaining table in this database to hourly profiling. Each profile is one scan of its table."
+                title={
+                  remaining > 0
+                    ? "Profiles every remaining table now, then hourly. Each profile is one scan of its table."
+                    : "Re-profiles every table in this database now."
+                }
                 className="whitespace-nowrap text-xs text-accent hover:underline disabled:opacity-50"
               >
-                {busy ? "Adding…" : `Profile all ${remaining}`}
+                {busy ? "Starting…" : remaining > 0 ? `Profile all ${remaining}` : `Run all ${profiled}`}
               </button>
             )}
           </div>
@@ -221,6 +236,27 @@ export function ProjectProfiling() {
   }, [slug]);
 
   useEffect(load, [load]);
+
+  // While any table is mid-profile, refresh every few seconds so results
+  // appear on their own. Capped so a stuck run cannot poll forever.
+  const inFlight = (catalog ?? []).some((d) =>
+    d.schemas.some((s) => s.tables.some((t) => t.target && (!t.target.last_run || t.target.last_run.status === "RUNNING"))),
+  );
+  const [polls, setPolls] = useState(0);
+  useEffect(() => {
+    if (!inFlight || polls > 90) return;
+    const timer = window.setTimeout(() => {
+      setPolls((n) => n + 1);
+      load();
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [inFlight, polls, load]);
+
+  // A user action starts a fresh polling window.
+  const refresh = useCallback(() => {
+    setPolls(0);
+    load();
+  }, [load]);
 
   const acknowledge = async (id: string) => {
     await profilingApi.acknowledge(id);
@@ -288,7 +324,7 @@ export function ProjectProfiling() {
               </thead>
               <tbody>
                 {catalog.map((database) => (
-                  <DatabaseRows key={database.id} database={database} slug={slug} onChanged={load} />
+                  <DatabaseRows key={database.id} database={database} slug={slug} onChanged={refresh} />
                 ))}
               </tbody>
             </table>

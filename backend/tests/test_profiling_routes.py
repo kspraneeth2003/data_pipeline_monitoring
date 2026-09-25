@@ -220,3 +220,14 @@ def test_unreadable_database_is_listed_with_a_reason_not_dropped(env, monkeypatc
     assert database["schemas"] == []
     assert "cannot read DPM_SRC_INVENTORY" in database["error"]
     assert "002003" not in database["error"]
+
+
+def test_run_all_without_a_running_scheduler_queues_nothing(env):
+    # Tests run without the scheduler; the hourly schedule is the fallback.
+    client, _ = env
+    discovered = client.post("/api/projects/p/profiling/discover", json={"database_id": "db-1"}).json()
+    assert discovered["queued"] == 0
+    assert client.post("/api/projects/p/profiling/run-all", json={"database_id": "db-1"}).json() == {
+        "queued": 0,
+        "targets": 1,
+    }

@@ -703,6 +703,11 @@ Nothing has been pushed - publishing is the user's call per `CLAUDE.md`.
 
 ## Local setup (if starting fresh)
 
+The `setup-and-run` skill (`.claude/skills/setup-and-run/SKILL.md`) walks a
+fresh clone through all of this - prerequisites, `backend/.env`, database,
+seed, both servers, and the failure modes each step has. Keep it in sync with
+this section; it is what a teammate with Claude Code actually follows.
+
 ```bash
 # Postgres
 brew services start postgresql@16   # if not running

@@ -20,7 +20,9 @@ See [PLAN.md](./PLAN.md) for requirements/milestones and [STATUS.md](./STATUS.md
 
 ## Quick start
 
-See [STATUS.md](./STATUS.md#local-setup-if-starting-fresh) for full setup. Short version:
+If you have Claude Code, the `setup-and-run` skill in `.claude/skills/` does
+all of this for you - ask it to set up and run DPM. Otherwise see
+[STATUS.md](./STATUS.md#local-setup-if-starting-fresh) for full setup. Short version:
 
 ```bash
 # Backend

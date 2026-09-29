@@ -28,7 +28,7 @@ export function EnabledToggle({
     <button
       onClick={toggle}
       disabled={busy}
-      className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+      className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors disabled:opacity-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
     >
       {enabled ? "Disable" : "Enable"}
     </button>

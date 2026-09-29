@@ -1,0 +1,134 @@
+-- DPM_CUSTOMER_360.BI - the reporting layer.
+--
+-- Separate from GOLD because it is a different kind of thing and fails in a
+-- different way. GOLD is the model: one row per real-world entity, checkable
+-- against the layer beneath it by key. BI is derived numbers, where key parity
+-- is meaningless by construction - there are ninety LOYALTY_DAILY rows and a
+-- dozen TRANSACTION rows behind one INDIVIDUAL_ENGAGEMENT row.
+--
+-- What holds here instead is reconciliation: the totals agree with the facts
+-- they were computed from, at a stated grain. That is the only true statement
+-- about this hop, and a parity check bent to fit it would have to be loosened
+-- until it stopped catching anything.
+--
+-- The view on the end exists because a report that reads GOLD directly ends up
+-- re-implementing these joins in the BI tool, where nobody can check them.
+
+CREATE SCHEMA IF NOT EXISTS DPM_CUSTOMER_360.BI;
+
+CREATE TABLE IF NOT EXISTS DPM_CUSTOMER_360.BI.INDIVIDUAL_ENGAGEMENT (
+  INDIVIDUAL_ID STRING NOT NULL,
+  FULL_NAME STRING,
+  LOYALTY_TIER STRING,
+  LOYALTY_STATUS STRING,
+  -- Each of these has a matching aggregate over a GOLD fact, which is what
+  -- makes the table checkable rather than merely plausible.
+  TRANSACTION_COUNT NUMBER,
+  LIFETIME_VALUE NUMBER(18,2),
+  ACTIVE_DAYS NUMBER,
+  TOTAL_POINTS_EARNED NUMBER,
+  TOTAL_POINTS_REDEEMED NUMBER,
+  NET_POINTS NUMBER,
+  LAST_TRANSACTION_DATE DATE,
+  LAST_ACTIVITY_DATE DATE,
+  UPDATED_AT TIMESTAMP_NTZ
+) COMMENT = 'BI: one row per individual, with their transactions and loyalty series rolled up';
+
+CREATE OR REPLACE TASK DPM_CUSTOMER_360.BI.TASK_GOLD_TO_BI_ENGAGEMENT
+  WAREHOUSE = DPM_PIPELINE_WH
+  SCHEDULE = '2 MINUTE'
+  WHEN SYSTEM$STREAM_HAS_DATA('DPM_CUSTOMER_360.GOLD.INDIVIDUAL_STREAM')
+    OR SYSTEM$STREAM_HAS_DATA('DPM_CUSTOMER_360.GOLD.TRANSACTION_STREAM')
+    OR SYSTEM$STREAM_HAS_DATA('DPM_CUSTOMER_360.GOLD.LOYALTY_DAILY_STREAM')
+AS
+MERGE INTO DPM_CUSTOMER_360.BI.INDIVIDUAL_ENGAGEMENT tgt
+USING (
+  WITH changed AS (
+    SELECT INDIVIDUAL_ID FROM DPM_CUSTOMER_360.GOLD.INDIVIDUAL_STREAM
+    UNION
+    SELECT INDIVIDUAL_ID FROM DPM_CUSTOMER_360.GOLD.TRANSACTION_STREAM
+    UNION
+    SELECT INDIVIDUAL_ID FROM DPM_CUSTOMER_360.GOLD.LOYALTY_DAILY_STREAM
+  ),
+  -- The two fact rollups are computed separately and joined, rather than in one
+  -- query with two LEFT JOINs. Joining a per-individual fan-out of twelve
+  -- transactions against one of ninety loyalty days would multiply the two and
+  -- every total would be wrong by a factor nobody would think to question.
+  tx AS (
+    SELECT INDIVIDUAL_ID,
+           COUNT(*) AS TRANSACTION_COUNT,
+           COALESCE(SUM(AMOUNT), 0) AS LIFETIME_VALUE,
+           MAX(TRANSACTION_DATE) AS LAST_TRANSACTION_DATE
+    FROM DPM_CUSTOMER_360.GOLD.TRANSACTION
+    WHERE INDIVIDUAL_ID IS NOT NULL
+    GROUP BY INDIVIDUAL_ID
+  ),
+  pts AS (
+    SELECT INDIVIDUAL_ID,
+           COUNT(*) AS ACTIVE_DAYS,
+           COALESCE(SUM(POINTS_EARNED), 0) AS TOTAL_POINTS_EARNED,
+           COALESCE(SUM(POINTS_REDEEMED), 0) AS TOTAL_POINTS_REDEEMED,
+           MAX(SNAPSHOT_DATE) AS LAST_ACTIVITY_DATE
+    FROM DPM_CUSTOMER_360.GOLD.LOYALTY_DAILY
+    GROUP BY INDIVIDUAL_ID
+  )
+  SELECT
+      i.INDIVIDUAL_ID,
+      i.FULL_NAME,
+      i.LOYALTY_TIER,
+      i.LOYALTY_STATUS,
+      COALESCE(tx.TRANSACTION_COUNT, 0) AS TRANSACTION_COUNT,
+      COALESCE(tx.LIFETIME_VALUE, 0) AS LIFETIME_VALUE,
+      COALESCE(pts.ACTIVE_DAYS, 0) AS ACTIVE_DAYS,
+      COALESCE(pts.TOTAL_POINTS_EARNED, 0) AS TOTAL_POINTS_EARNED,
+      COALESCE(pts.TOTAL_POINTS_REDEEMED, 0) AS TOTAL_POINTS_REDEEMED,
+      COALESCE(pts.TOTAL_POINTS_EARNED, 0) - COALESCE(pts.TOTAL_POINTS_REDEEMED, 0) AS NET_POINTS,
+      tx.LAST_TRANSACTION_DATE,
+      pts.LAST_ACTIVITY_DATE
+  FROM DPM_CUSTOMER_360.GOLD.INDIVIDUAL i
+  LEFT JOIN tx ON tx.INDIVIDUAL_ID = i.INDIVIDUAL_ID
+  LEFT JOIN pts ON pts.INDIVIDUAL_ID = i.INDIVIDUAL_ID
+  WHERE i.INDIVIDUAL_ID IN (SELECT INDIVIDUAL_ID FROM changed)
+) src
+ON tgt.INDIVIDUAL_ID = src.INDIVIDUAL_ID
+WHEN MATCHED THEN UPDATE SET
+  FULL_NAME = src.FULL_NAME, LOYALTY_TIER = src.LOYALTY_TIER,
+  LOYALTY_STATUS = src.LOYALTY_STATUS, TRANSACTION_COUNT = src.TRANSACTION_COUNT,
+  LIFETIME_VALUE = src.LIFETIME_VALUE, ACTIVE_DAYS = src.ACTIVE_DAYS,
+  TOTAL_POINTS_EARNED = src.TOTAL_POINTS_EARNED,
+  TOTAL_POINTS_REDEEMED = src.TOTAL_POINTS_REDEEMED, NET_POINTS = src.NET_POINTS,
+  LAST_TRANSACTION_DATE = src.LAST_TRANSACTION_DATE,
+  LAST_ACTIVITY_DATE = src.LAST_ACTIVITY_DATE, UPDATED_AT = CURRENT_TIMESTAMP()
+WHEN NOT MATCHED THEN INSERT (
+  INDIVIDUAL_ID, FULL_NAME, LOYALTY_TIER, LOYALTY_STATUS, TRANSACTION_COUNT,
+  LIFETIME_VALUE, ACTIVE_DAYS, TOTAL_POINTS_EARNED, TOTAL_POINTS_REDEEMED,
+  NET_POINTS, LAST_TRANSACTION_DATE, LAST_ACTIVITY_DATE, UPDATED_AT
+) VALUES (
+  src.INDIVIDUAL_ID, src.FULL_NAME, src.LOYALTY_TIER, src.LOYALTY_STATUS,
+  src.TRANSACTION_COUNT, src.LIFETIME_VALUE, src.ACTIVE_DAYS,
+  src.TOTAL_POINTS_EARNED, src.TOTAL_POINTS_REDEEMED, src.NET_POINTS,
+  src.LAST_TRANSACTION_DATE, src.LAST_ACTIVITY_DATE, CURRENT_TIMESTAMP()
+);
+
+-- The shape a reporting tool consumes. A view rather than a table because it
+-- adds no data - only a stable name and a join a report would otherwise have
+-- to re-implement where nobody can check it.
+CREATE OR REPLACE VIEW DPM_CUSTOMER_360.BI.INDIVIDUAL_SUMMARY_VW
+  COMMENT = 'BI: the individual with their engagement totals, for reporting'
+AS
+SELECT
+    i.INDIVIDUAL_ID,
+    i.FULL_NAME,
+    i.PRIMARY_EMAIL,
+    i.SOURCE_SYSTEMS,
+    i.LOYALTY_TIER,
+    i.LOYALTY_STATUS,
+    i.SIGNUP_DATE,
+    e.TRANSACTION_COUNT,
+    e.LIFETIME_VALUE,
+    e.NET_POINTS,
+    e.LAST_TRANSACTION_DATE,
+    e.LAST_ACTIVITY_DATE
+FROM DPM_CUSTOMER_360.GOLD.INDIVIDUAL i
+LEFT JOIN DPM_CUSTOMER_360.BI.INDIVIDUAL_ENGAGEMENT e
+  ON e.INDIVIDUAL_ID = i.INDIVIDUAL_ID;

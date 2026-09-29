@@ -9,6 +9,7 @@ type InitialCheck = {
   id: string;
   name: string;
   description: string | null;
+  rationale: string | null;
   type: string;
   schedule: string;
   enabled: boolean;
@@ -23,12 +24,25 @@ function configFieldToString(value: unknown, kind: string): string {
   return String(value);
 }
 
-export function CheckForm({ connectors, initial }: { connectors: ConnectorOption[]; initial?: InitialCheck }) {
+export function CheckForm({
+  connectors,
+  initial,
+  databaseId,
+  projectSlug,
+  databaseSlug,
+}: {
+  connectors: ConnectorOption[];
+  initial?: InitialCheck;
+  databaseId: string;
+  projectSlug: string;
+  databaseSlug: string;
+}) {
   const navigate = useNavigate();
   const isEdit = Boolean(initial);
 
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
+  const [rationale, setRationale] = useState(initial?.rationale ?? "");
   const [type, setType] = useState(initial?.type ?? CHECK_TYPES[0].value);
   const [schedule, setSchedule] = useState(initial?.schedule ?? "*/5 * * * *");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
@@ -36,6 +50,9 @@ export function CheckForm({ connectors, initial }: { connectors: ConnectorOption
   const [secondaryConnectorId, setSecondaryConnectorId] = useState(initial?.secondary_connector_id ?? "");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Carried onto the version this edit produces. Optional, but a history
+  // where every entry says nothing is just a list of timestamps.
+  const [note, setNote] = useState("");
 
   const meta = useMemo(() => getCheckTypeMeta(type)!, [type]);
 
@@ -89,16 +106,19 @@ export function CheckForm({ connectors, initial }: { connectors: ConnectorOption
       const payload = {
         name,
         description: description || undefined,
+        rationale: rationale || undefined,
         type,
         schedule,
         enabled,
+        database_id: databaseId,
         connector_id: connectorId,
         secondary_connector_id: meta.needsSecondaryConnector ? secondaryConnectorId : undefined,
         config,
+        ...(isEdit ? { note: note || undefined } : {}),
       };
 
       const result = isEdit ? await api.updateCheck(initial!.id, payload) : await api.createCheck(payload);
-      navigate(`/checks/${result.id}`);
+      navigate(`/projects/${projectSlug}/databases/${databaseSlug}/checks/${result.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -115,8 +135,30 @@ export function CheckForm({ connectors, initial }: { connectors: ConnectorOption
         </label>
 
         <label className="flex flex-col gap-1 text-sm sm:col-span-2">
-          <span className="font-medium text-zinc-700 dark:text-zinc-300">Description (optional)</span>
-          <input value={description} onChange={(e) => setDescription(e.target.value)} className={inputClass} />
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">Description</span>
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className={inputClass}
+            placeholder="What this asserts, in at most two lines."
+          />
+        </label>
+
+        {/* The second of the three things a check owes its reader. Kept a
+            textarea rather than an input because a one-line box asks for a
+            label, and a label is what the name field already is. */}
+        <label className="flex flex-col gap-1 text-sm sm:col-span-2">
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">Logic</span>
+          <textarea
+            value={rationale}
+            onChange={(e) => setRationale(e.target.value)}
+            rows={3}
+            className={inputClass}
+            placeholder="Which invariant this relies on, where it comes from, and what a failure would mean."
+          />
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            Why this check is worth running. A failing check without this is a red square nobody can act on.
+          </span>
         </label>
 
         <label className="flex flex-col gap-1 text-sm">
@@ -205,6 +247,20 @@ export function CheckForm({ connectors, initial }: { connectors: ConnectorOption
           </label>
         ))}
       </fieldset>
+
+      {isEdit && (
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-medium text-zinc-700 dark:text-zinc-300">
+            What changed, and why <span className="font-normal text-zinc-500">(optional)</span>
+          </span>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            className={inputClass}
+            placeholder="Shown against this edit in the check's version history."
+          />
+        </label>
+      )}
 
       {error && <p className="text-sm text-red-600">{error}</p>}
 

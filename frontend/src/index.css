@@ -1,44 +1,216 @@
 @import "tailwindcss";
 
+/* The app is dark-only now: the look is a control-room console, and a bright
+   sheet of white is not that. Making `dark:` always match means the existing
+   dark-mode classes scattered through the pages become the single truth,
+   instead of every element carrying two palettes that only one OS setting
+   ever sees. */
+@custom-variant dark (&);
+
 :root {
-  --background: #f8f8fa;
-  --foreground: #18181b;
-  --surface: #ffffff;
-  --border: #e4e4e7;
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --accent-foreground: #ffffff;
-  --accent-soft: #eef2ff;
+  color-scheme: dark;
+
+  --background: #08090a;
+  --foreground: #edeff2;
+  --surface: #0d0f11;
+  --surface-raised: #121417;
+  --border: #21252a;
+
+  /* Orange is the only chromatic accent in the chrome. Everything else that
+     carries color is a status signal, so a splash of color always means
+     something happened. */
+  --accent: #ff6a1f;
+  --accent-hover: #ff8642;
+  --accent-foreground: #0a0a0b;
+  --accent-soft: rgba(255, 106, 31, 0.12);
+  --accent-line: rgba(255, 106, 31, 0.45);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
   --color-border: var(--border);
   --color-accent: var(--accent);
   --color-accent-hover: var(--accent-hover);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0c;
-    --foreground: #f4f4f5;
-    --surface: #17171a;
-    --border: #2a2a2e;
-    --accent: #818cf8;
-    --accent-hover: #a5b4fc;
-    --accent-foreground: #1e1b4b;
-    --accent-soft: #1e1b4b;
-  }
+@theme {
+  /* Boxy, squared-off terminal type. The fallbacks matter: if the webfont
+     never loads, the UI should still read as machinery, not as a word
+     processor. */
+  --font-sans: "Chakra Petch", "DIN Alternate", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Nothing is rounded. Every `rounded-*` in the codebase flattens to a hard
+     corner through these, so the boxiness needs no per-element edits. */
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+
+  /* Neutrals are re-cut for a near-black ground: cool graphite rather than
+     Tailwind's warm-leaning zinc, so the orange stays the warmest thing on
+     screen. */
+  --color-zinc-50: #f4f6f8;
+  --color-zinc-100: #dfe3e8;
+  --color-zinc-200: #c2c8d0;
+  --color-zinc-300: #a4acb6;
+  --color-zinc-400: #7e8792;
+  --color-zinc-500: #8d97a3;
+  --color-zinc-600: #6d7783;
+  --color-zinc-700: #333a42;
+  --color-zinc-800: #191d22;
+  --color-zinc-900: #101316;
+  --color-zinc-950: #0a0c0e;
+
+  /* Status signals, retuned to sit on black without vibrating against the
+     accent. Warn is pushed to yellow so it never reads as "orange = brand". */
+  --color-emerald-50: #0c1f18;
+  --color-emerald-100: #0f2a20;
+  --color-emerald-300: #6df2b4;
+  --color-emerald-400: #2fe08d;
+  --color-emerald-500: #17d478;
+  --color-emerald-600: #2fe08d;
+  --color-emerald-700: #2fe08d;
+  --color-emerald-800: #6df2b4;
+  --color-emerald-900: #14432f;
+  --color-emerald-950: #06231a;
+
+  --color-amber-50: #231b04;
+  --color-amber-100: #2c2206;
+  --color-amber-200: #ffdf6b;
+  --color-amber-300: #ffd23f;
+  --color-amber-400: #ffc21a;
+  --color-amber-500: #ffc21a;
+  --color-amber-700: #ffd23f;
+  --color-amber-800: #ffd23f;
+  --color-amber-900: #ffdf6b;
+  --color-amber-950: #241a03;
+
+  --color-red-50: #260b0e;
+  --color-red-100: #300d11;
+  --color-red-300: #ff9a9a;
+  --color-red-400: #ff6363;
+  --color-red-500: #ff3b3b;
+  --color-red-600: #ff6363;
+  --color-red-700: #ff6363;
+  --color-red-800: #ff9a9a;
+  --color-red-900: #4a1418;
+  --color-red-950: #26090c;
+
+  --color-blue-50: #06202b;
+  --color-blue-400: #4ccbff;
+  --color-blue-500: #22b8f5;
+  --color-blue-600: #4ccbff;
+  --color-blue-700: #4ccbff;
 }
 
 body {
   margin: 0;
   background: var(--background);
   color: var(--foreground);
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A faint engineering grid plus one warm horizon glow behind everything.
+   Fixed, non-interactive, and low enough in contrast that it reads as texture
+   rather than as content. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60rem 28rem at 50% -8rem, rgba(255, 106, 31, 0.1), transparent 70%),
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px) 0 0 / 100% 3rem,
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px) 0 0 / 3rem 100%;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Headings are the machine labels: squared caps, wide tracking, no weight
+   heavier than the grid around them. */
+h1 {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* Small caps labels (`text-xs uppercase`) get the mono face so columns of
+   them line up like readouts. */
+.uppercase.text-xs,
+th {
+  font-family: var(--font-mono);
+  letter-spacing: 0.1em;
+}
+
+/* Code reads as code. Table cells opt in per column instead - a whole table
+   in mono wraps the narrow columns. */
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input,
+select,
+textarea {
+  font-family: var(--font-mono);
+}
+
+/* Native controls follow the accent too - a stock blue checkbox is the one
+   piece of chrome that gives away the default theme. */
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"],
+progress {
+  accent-color: var(--accent);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent) !important;
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #23272d;
+  border: 2px solid var(--background);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
 }

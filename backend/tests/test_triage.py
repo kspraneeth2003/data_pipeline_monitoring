@@ -1,0 +1,402 @@
+"""The incident lifecycle, which is the answer to FR10.
+
+Every case here is a duplicate-ticket bug that the previous design could not
+avoid, because a ticket bound to one `CheckRun` had nowhere to record a
+second observation. The assertions are mostly "still exactly one ticket".
+
+Runs against SQLite in memory: none of this logic is Postgres-specific, and
+a test suite that needs a live database is a test suite that does not get
+run. JSONB is the one exception, mapped to JSON for the same reason.
+"""
+
+import itertools
+from datetime import timedelta
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from app import models
+from app.db import Base
+from app.models import (
+    Check,
+    CheckRun,
+    Connector,
+    Database,
+    Incident,
+    IncidentState,
+    Project,
+    IncidentSeverity,
+    cuid,
+)
+from app.monitoring import incidents as lifecycle
+from app.monitoring import triage
+
+
+@pytest.fixture
+def db():
+    # JSONB is rendered as JSON for SQLite by tests/conftest.py.
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+
+
+@pytest.fixture
+def jira(monkeypatch):
+    """A fake Jira, so the suite never talks to a real one.
+
+    Records what would have been sent, which is what most of these tests
+    actually want to assert: that one issue is filed and then commented on,
+    rather than a new one filed per failing run.
+    """
+    from app.tickets.base import TicketRef, TicketState
+    from app.tickets.registry import ticket_backend
+
+    class FakeJira:
+        name = "jira"
+
+        def __init__(self):
+            self.created: list[str] = []
+            self.comments: list[str] = []
+            self.transitions: list[bool] = []
+            self.priorities: list[str] = []
+            self.state = TicketState(key="DATA-1", status="To Do")
+
+        def create(self, incident, content):
+            self.created.append(content.title)
+            return TicketRef(key="DATA-1", url="https://example.atlassian.net/browse/DATA-1")
+
+        def comment(self, incident, body):
+            self.comments.append(body)
+            return True
+
+        def transition(self, incident, done, comment=None):
+            if comment:
+                self.comments.append(comment)
+            self.transitions.append(done)
+            return True
+
+        def set_priority(self, incident, priority):
+            self.priorities.append(priority)
+            return True
+
+        def fetch_state(self, incident):
+            return self.state
+
+    fake = FakeJira()
+    ticket_backend.cache_clear()
+    monkeypatch.setattr("app.monitoring.triage.ticket_backend", lambda: fake)
+    yield fake
+    ticket_backend.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def no_tracker(monkeypatch, request):
+    """Default to no tracker at all, which is a supported way to run this.
+
+    Tests that care about Jira request the `jira` fixture, which overrides
+    this. Everything else must work with nothing configured - that is the
+    point of incidents living in Postgres.
+    """
+    if "jira" in request.fixturenames:
+        yield
+        return
+    from app.tickets.registry import ticket_backend
+
+    ticket_backend.cache_clear()
+    monkeypatch.setattr("app.monitoring.triage.ticket_backend", lambda: None)
+    yield
+    ticket_backend.cache_clear()
+
+
+@pytest.fixture
+def check(db):
+    project = Project(id=cuid(), slug="p", name="P")
+    connector = Connector(id=cuid(), project_id=project.id, name="c", type="SNOWFLAKE", config={})
+    database = Database(
+        id=cuid(), project_id=project.id, connector_id=connector.id, name="DB", slug="db"
+    )
+    check = Check(
+        id=cuid(), name="Orders parity", type="ROW_COUNT", schedule="* * * * *",
+        database_id=database.id, connector_id=connector.id, config={},
+    )
+    db.add_all([project, connector, database, check])
+    db.commit()
+    return check
+
+
+# Runs are given increasing timestamps a minute apart. Real runs are always
+# ordered in time, and letting them all share `now()` would test an ambiguity
+# that cannot occur while hiding ordering bugs that can.
+_run_clock = itertools.count()
+
+
+def make_run(db, check, status, message="boom"):
+    run = CheckRun(
+        id=cuid(),
+        check_id=check.id,
+        status=status,
+        message=message,
+        started_at=lifecycle.utcnow() + timedelta(minutes=next(_run_clock)),
+    )
+    db.add(run)
+    db.commit()
+    return run
+
+
+def fail(db, check, message="boom", rca=None):
+    return triage.on_failed_run(db, check, make_run(db, check, "FAILED", message), rca)
+
+
+def pass_(db, check):
+    return triage.on_passed_run(db, check, make_run(db, check, "PASSED", None))
+
+
+class TestOneIncidentPerProblem:
+    def test_first_failure_opens_an_incident_and_files_one_issue(self, db, check, jira):
+        incident = fail(db, check)
+        assert incident.state == IncidentState.OPEN.value
+        assert len(jira.created) == 1
+        assert incident.ticket_key == "DATA-1"
+        assert incident.ticket_url.endswith("/browse/DATA-1")
+
+    def test_repeated_failures_do_not_file_more_issues(self, db, check, jira):
+        # This is FR10. Before incidents existed this produced five tickets.
+        for i in range(5):
+            fail(db, check, f"boom {i}")
+        assert db.query(Incident).count() == 1
+        assert len(jira.created) == 1
+        assert db.query(Incident).one().failure_count == 5
+
+    def test_a_changed_message_is_commented_not_re_filed(self, db, check, jira):
+        fail(db, check, "37 keys missing")
+        incident = fail(db, check, "412 keys missing")
+        bodies = [e.body for e in incident.events]
+        assert len(jira.created) == 1
+        assert any("412 keys missing" in b and "37 keys missing" in b for b in bodies)
+        # ...and the same comment reaches Jira, not just our own record.
+        assert any("412 keys missing" in c for c in jira.comments)
+
+    def test_an_incident_is_tracked_even_with_no_jira(self, db, check):
+        # No tracker is a supported way to run this. The incident is the
+        # record; Jira is the external face of it.
+        incident = fail(db, check)
+        assert incident.state == IncidentState.OPEN.value
+        assert incident.ticket_key is None
+        assert [e.kind for e in incident.events] == ["OPENED"]
+
+    def test_an_unchanged_message_does_not_comment(self, db, check):
+        # A comment per run on a check failing all day is how a ticket
+        # becomes unreadable, and then muted.
+        fail(db, check, "same")
+        incident = fail(db, check, "same")
+        assert len([e for e in incident.events if e.kind == "COMMENT"]) == 0
+
+
+class TestRecovery:
+    def test_one_pass_does_not_clear(self, db, check):
+        # A single green run of a flapping check is not a recovery.
+        fail(db, check)
+        incident = pass_(db, check)
+        assert incident.state == IncidentState.OPEN.value
+
+    def test_two_passes_clear_and_close_the_issue(self, db, check, jira):
+        fail(db, check)
+        pass_(db, check)
+        incident = pass_(db, check)
+        assert incident.state == IncidentState.CLEARED.value
+        assert incident.cleared_at is not None
+        assert jira.transitions == [True]
+        assert any(e.kind == "CLEARED" for e in incident.events)
+
+    def test_alternating_pass_fail_never_clears(self, db, check):
+        # Passes must be consecutive, or a check flapping every other run
+        # creeps to the threshold and closes something still happening.
+        fail(db, check)
+        for _ in range(4):
+            pass_(db, check)
+            fail(db, check)
+        incident = db.query(Incident).one()
+        assert incident.state == IncidentState.OPEN.value
+
+    def test_failing_again_soon_after_clearing_reopens(self, db, check):
+        fail(db, check)
+        pass_(db, check)
+        pass_(db, check)
+        incident = fail(db, check)
+        # One incident, recurring - not a second one. The fact that this is
+        # the third recurrence is the most useful thing on the page.
+        assert db.query(Incident).count() == 1
+        assert incident.state == IncidentState.OPEN.value
+        assert any(e.kind == "REOPENED" for e in incident.events)
+
+
+class TestNoticingThatNobodyNoticed:
+    def test_a_stale_untouched_ticket_is_escalated(self, db, check):
+        incident = fail(db, check)
+        incident.opened_at = lifecycle.utcnow() - timedelta(days=3)
+        db.commit()
+
+        escalated = triage.escalate_stale(db)
+        assert [i.id for i in escalated] == [incident.id]
+        assert incident.severity == IncidentSeverity.HIGH.value
+        assert any(e.kind == "ESCALATED" for e in incident.events)
+
+    def test_an_issue_somebody_picked_up_is_not_escalated(self, db, check, jira):
+        # The point is absence of response, not slowness.
+        incident = fail(db, check)
+        incident.opened_at = lifecycle.utcnow() - timedelta(days=3)
+        incident.ticket_status = "In Progress"
+        incident.ticket_moved_at = lifecycle.utcnow() - timedelta(days=3)
+        db.commit()
+        assert triage.escalate_stale(db) == []
+
+    def test_an_assigned_issue_is_not_escalated(self, db, check, jira):
+        incident = fail(db, check)
+        incident.opened_at = lifecycle.utcnow() - timedelta(days=3)
+        incident.ticket_assignee = "Priya"
+        incident.ticket_moved_at = lifecycle.utcnow() - timedelta(days=3)
+        db.commit()
+        assert triage.escalate_stale(db) == []
+
+    def test_an_incident_with_no_issue_at_all_is_escalated(self, db, check):
+        # Nothing was ever filed, so there is nothing anyone could have
+        # responded to - which is exactly the case to surface, not skip.
+        incident = fail(db, check)
+        incident.opened_at = lifecycle.utcnow() - timedelta(days=3)
+        db.commit()
+        assert [i.id for i in triage.escalate_stale(db)] == [incident.id]
+        assert "no issue was ever filed" in incident.events[-1].body
+
+    def test_escalation_backs_off(self, db, check):
+        incident = fail(db, check)
+        incident.opened_at = lifecycle.utcnow() - timedelta(days=3)
+        db.commit()
+        triage.escalate_stale(db)
+        # Immediately again: a daily nag gets filtered and then ignored.
+        assert triage.escalate_stale(db) == []
+
+    def test_a_closed_issue_on_a_still_failing_check_is_reopened(self, db, check, jira):
+        # The most dangerous state: everyone believes it is handled and
+        # nothing is watching.
+        incident = fail(db, check)
+        lifecycle.clear_incident(db, incident, "cleared")
+        db.commit()
+        make_run(db, check, "FAILED", "still broken")
+
+        reopened = triage.reopen_closed_but_failing(db)
+        assert [i.id for i in reopened] == [incident.id]
+        assert incident.state == IncidentState.OPEN.value
+        # Reopened in Jira too, not just here.
+        assert jira.transitions[-1] is False
+
+    def test_a_closed_issue_on_a_passing_check_is_left_alone(self, db, check, jira):
+        incident = fail(db, check)
+        lifecycle.clear_incident(db, incident, "cleared")
+        db.commit()
+        make_run(db, check, "PASSED", None)
+        assert triage.reopen_closed_but_failing(db) == []
+
+
+class TestSeverity:
+    def test_an_error_outranks_a_failure(self, db, check):
+        # A check that could not run means the warehouse or the credentials
+        # are wrong, which blocks every other answer.
+        run = make_run(db, check, "ERROR", "could not connect")
+        incident = triage.on_failed_run(db, check, run, None)
+        assert incident.severity == IncidentSeverity.HIGH.value
+
+    def test_sustained_failure_raises_severity_on_its_own(self, db, check):
+        for _ in range(10):
+            fail(db, check)
+        assert db.query(Incident).one().severity == IncidentSeverity.HIGH.value
+
+
+class TestSweepScale:
+    def test_escalation_is_capped_per_sweep(self, db, check, monkeypatch):
+        # The first sweep over an existing backlog would otherwise escalate
+        # everything at once - 189 incidents on the real database, and with
+        # a tracker attached that many API calls in one tick.
+        monkeypatch.setattr("app.config.settings.max_escalations_per_sweep", 3)
+        old = lifecycle.utcnow() - timedelta(days=3)
+        for i in range(8):
+            incident = fail(db, check, f"boom {i}")
+            incident.state = IncidentState.CLEARED.value  # free the check for the next one
+            incident.opened_at = old + timedelta(minutes=i)
+            db.commit()
+        for incident in db.query(Incident).all():
+            incident.state = IncidentState.OPEN.value
+        db.commit()
+
+        assert len(triage.escalate_stale(db)) == 3
+
+    def test_the_cap_defers_the_least_neglected(self, db, check, monkeypatch):
+        monkeypatch.setattr("app.config.settings.max_escalations_per_sweep", 1)
+        older = fail(db, check, "older")
+        older.opened_at = lifecycle.utcnow() - timedelta(days=5)
+        older.state = IncidentState.CLEARED.value
+        db.commit()
+        newer = fail(db, check, "newer")
+        newer.opened_at = lifecycle.utcnow() - timedelta(days=2)
+        older.state = IncidentState.OPEN.value
+        db.commit()
+
+        assert [i.id for i in triage.escalate_stale(db)] == [older.id]
+
+
+class TestJiraSync:
+    """Escalation asks "has anyone responded", which only Jira can answer.
+
+    The sweep refreshes that once and the rest of the pass reads the cache,
+    so these cover the refresh itself - particularly that `ticket_moved_at`
+    tracks when the *issue* changed rather than when we last wrote to our
+    own record, which is what the staleness window is measured from.
+    """
+
+    def test_sync_pulls_status_and_assignee(self, db, check, jira):
+        from app.tickets.base import TicketState
+
+        incident = fail(db, check)
+        jira.state = TicketState(key="DATA-1", status="In Progress", assignee="Priya")
+
+        assert triage.sync_ticket_state(db, [incident]) == 1
+        assert incident.ticket_status == "In Progress"
+        assert incident.ticket_assignee == "Priya"
+        assert incident.ticket_synced_at is not None
+
+    def test_a_changed_status_moves_the_clock(self, db, check, jira):
+        from app.tickets.base import TicketState
+
+        incident = fail(db, check)
+        triage.sync_ticket_state(db, [incident])
+        before = incident.ticket_moved_at
+
+        jira.state = TicketState(key="DATA-1", status="In Progress")
+        triage.sync_ticket_state(db, [incident])
+        assert incident.ticket_moved_at > before
+
+    def test_an_unchanged_status_does_not_move_the_clock(self, db, check, jira):
+        # Otherwise every sweep would look like fresh human activity and
+        # nothing would ever be escalated.
+        incident = fail(db, check)
+        triage.sync_ticket_state(db, [incident])
+        before = incident.ticket_moved_at
+
+        triage.sync_ticket_state(db, [incident])
+        assert incident.ticket_moved_at == before
+
+    def test_sync_is_a_no_op_with_no_tracker(self, db, check):
+        incident = fail(db, check)
+        assert triage.sync_ticket_state(db, [incident]) == 0
+
+    def test_recent_jira_activity_defers_escalation(self, db, check, jira):
+        # Somebody moved the issue back to To Do an hour ago. It looks
+        # untouched by status, but it is not unattended.
+        incident = fail(db, check)
+        incident.opened_at = lifecycle.utcnow() - timedelta(days=3)
+        incident.ticket_status = "To Do"
+        incident.ticket_moved_at = lifecycle.utcnow() - timedelta(hours=1)
+        db.commit()
+        assert triage.escalate_stale(db) == []

@@ -7,6 +7,7 @@ from app.connectors.registry import build_connector
 from app.rca.extract_targets import extract_rca_targets
 from app.rca.git_context import gather_git_context
 from app.rca.heuristic import synthesize_heuristic_rca
+from app.rca.object_repo_map import EMPTY_REPO_CONTEXT, RepoContext
 from app.rca.llm import ClaudeCliChatModel, extract_json
 from app.rca.snowflake_context import gather_snowflake_context
 
@@ -19,6 +20,7 @@ class RcaState(TypedDict):
     connector_config: dict
     message: str
     metrics: dict
+    repo: RepoContext
     objects: list[dict]
     llm_error: str | None
     result: dict | None
@@ -35,7 +37,7 @@ def _gather_evidence(state: RcaState) -> RcaState:
     try:
         for target in targets:
             snowflake_ctx = gather_snowflake_context(connector, target["object"])
-            git_ctx = gather_git_context(target["object"], target["keyword"])
+            git_ctx = gather_git_context(target["object"], target["keyword"], state["repo"])
             objects.append({"object": target["object"], "snowflake": snowflake_ctx, "git": git_ctx})
     finally:
         connector.close()
@@ -126,6 +128,7 @@ def generate_rca(
     connector_config: dict,
     message: str,
     metrics: dict,
+    repo: RepoContext = EMPTY_REPO_CONTEXT,
 ) -> dict:
     initial_state: RcaState = {
         "check_name": check_name,
@@ -135,6 +138,7 @@ def generate_rca(
         "connector_config": connector_config,
         "message": message,
         "metrics": metrics,
+        "repo": repo,
         "objects": [],
         "llm_error": None,
         "result": None,

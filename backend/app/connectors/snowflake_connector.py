@@ -106,3 +106,34 @@ def test_snowflake_connection(config: dict) -> None:
         connector.run_query("SELECT 1")
     finally:
         connector.close()
+
+
+def probe_snowflake(config: dict) -> dict:
+    """Test credentials and report what they can reach, without saving anything.
+
+    This is what lets a project be set up in one pass: the user types credentials,
+    sees which account/role they actually landed on and which databases exist,
+    and picks from that - instead of saving a connector, navigating elsewhere,
+    and finding out later that the role cannot see what they expected.
+    """
+    connector = SnowflakeConnector(config)
+    try:
+        identity = connector.run_query(
+            "SELECT CURRENT_ACCOUNT() AS ACCOUNT, CURRENT_USER() AS USERNAME, "
+            "CURRENT_ROLE() AS ROLE, CURRENT_WAREHOUSE() AS WAREHOUSE"
+        )[0]
+        rows = connector.run_query("SHOW DATABASES")
+        names = sorted(
+            str(r["name"])
+            for r in rows
+            if r.get("name") and str(r["name"]) not in {"SNOWFLAKE", "SNOWFLAKE_SAMPLE_DATA"}
+        )
+        return {
+            "account": identity.get("ACCOUNT"),
+            "username": identity.get("USERNAME"),
+            "role": identity.get("ROLE"),
+            "warehouse": identity.get("WAREHOUSE"),
+            "databases": names,
+        }
+    finally:
+        connector.close()

@@ -1,23 +1,63 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { TopNav } from "./components/TopNav";
-import { Dashboard } from "./pages/Dashboard";
-import { Connectors } from "./pages/Connectors";
-import { Tickets } from "./pages/Tickets";
+import { Projects } from "./pages/Projects";
+import { NewProject } from "./pages/NewProject";
+import { NewProjectManual } from "./pages/NewProjectManual";
+import { ProjectOverview } from "./pages/ProjectOverview";
+import { ProjectDatabases } from "./pages/ProjectDatabases";
+import { ProjectIncidents } from "./pages/ProjectIncidents";
+import { ProjectRevisions } from "./pages/ProjectRevisions";
+import { ProjectSettings } from "./pages/ProjectSettings";
+import { NewDatabase } from "./pages/NewDatabase";
+import { DatabaseChecks } from "./pages/DatabaseChecks";
+import { DatabaseSettings } from "./pages/DatabaseSettings";
+import { ProjectConnections } from "./pages/ProjectConnections";
 import { CheckDetail } from "./pages/CheckDetail";
 import { NewCheck } from "./pages/NewCheck";
 import { EditCheck } from "./pages/EditCheck";
 
+/**
+ * Routes mirror the hierarchy - project -> database -> check - so the URL
+ * always says where you are and every level above is reachable by trimming the
+ * path.
+ *
+ * A project opens on its checks, grouped by pipeline stage, rather than on its
+ * databases. The database is where a check is stored, not what it is about, and
+ * a parity check spans two of them - so /projects/:slug/databases is now a
+ * section of its own rather than the project's front door.
+ *
+ * Connections live inside a project too: connecting a warehouse is part of
+ * setting a project up, not a separate administrative step done elsewhere.
+ */
 export default function App() {
   return (
     <BrowserRouter>
       <TopNav />
       <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/connectors" element={<Connectors />} />
-        <Route path="/tickets" element={<Tickets />} />
-        <Route path="/checks/new" element={<NewCheck />} />
-        <Route path="/checks/:id" element={<CheckDetail />} />
-        <Route path="/checks/:id/edit" element={<EditCheck />} />
+        <Route path="/" element={<Projects />} />
+        <Route path="/projects/new" element={<NewProject />} />
+        <Route path="/projects/new/manual" element={<NewProjectManual />} />
+        <Route path="/projects/:slug" element={<ProjectOverview />} />
+        <Route path="/projects/:slug/incidents" element={<ProjectIncidents />} />
+        <Route path="/projects/:slug/changes" element={<ProjectRevisions />} />
+        <Route path="/projects/:slug/settings" element={<ProjectSettings />} />
+        <Route path="/projects/:slug/connections" element={<ProjectConnections />} />
+
+        <Route path="/projects/:slug/databases" element={<ProjectDatabases />} />
+        <Route path="/projects/:slug/databases/new" element={<NewDatabase />} />
+        <Route path="/projects/:slug/databases/:dbSlug" element={<DatabaseChecks />} />
+        <Route path="/projects/:slug/databases/:dbSlug/settings" element={<DatabaseSettings />} />
+        <Route path="/projects/:slug/databases/:dbSlug/checks/new" element={<NewCheck />} />
+        <Route path="/projects/:slug/databases/:dbSlug/checks/:id" element={<CheckDetail />} />
+        <Route path="/projects/:slug/databases/:dbSlug/checks/:id/edit" element={<EditCheck />} />
+
+        {/* Pre-hierarchy URLs. Bookmarks should land somewhere useful, not 404.
+            /connectors is gone entirely - connections now belong to a project. */}
+        <Route path="/connectors" element={<Navigate to="/" replace />} />
+        <Route path="/projects/:slug/checks/*" element={<Navigate to=".." relative="path" replace />} />
+        <Route path="/checks/*" element={<Navigate to="/" replace />} />
+        <Route path="/tickets" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );

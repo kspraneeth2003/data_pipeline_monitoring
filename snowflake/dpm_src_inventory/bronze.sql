@@ -29,7 +29,7 @@ USING (
     RAW_PAYLOAD:unit_price::NUMBER(10,2) AS UNIT_PRICE,
     RAW_PAYLOAD:quantity_on_hand::NUMBER AS QUANTITY_ON_HAND,
     -- BUG: the bronze payload key is "warehouse_id" (see
-    -- SP_GENERATE_DUMMY_PRODUCTS in ../dpm_inventory_360/gold.sql), but this
+    -- SP_GENERATE_TEST_DATA in ../dpm_customer_360/generator.sql), but this
     -- reads "warehouse" instead, so WAREHOUSE_ID lands NULL for every row.
     RAW_PAYLOAD:warehouse::STRING AS WAREHOUSE_ID
   FROM DPM_SRC_INVENTORY.BRONZE.PRODUCTS_RAW_STREAM

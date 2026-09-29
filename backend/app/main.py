@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import checks, connectors, tickets
+from app.routers import checks, connectors, ingest, monitoring, projects
 from app.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(level=logging.INFO)
@@ -27,9 +27,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(projects.router)
+app.include_router(ingest.router)
+app.include_router(ingest.github_router)
 app.include_router(connectors.router)
 app.include_router(checks.router)
-app.include_router(tickets.router)
+app.include_router(monitoring.router)
 
 
 @app.get("/api/health")

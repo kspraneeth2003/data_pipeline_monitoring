@@ -63,6 +63,11 @@ class ParsedMerge(TypedDict):
     # The source expressions above are written against it, so anything that
     # re-uses them outside this MERGE has to know it to strip it.
     source_alias: str | None
+    # Whether it has a WHEN NOT MATCHED ... THEN INSERT arm. Only a MERGE that
+    # inserts promises every source row arrives in the target; an update-only
+    # one (an SCD2 "close" step) just edits rows that are already there, and
+    # parity derived from it asserts presence the statement never guaranteed.
+    inserts: bool
     file_path: str
 
 
@@ -486,6 +491,14 @@ def parse_merges(sql: str, file_path: str) -> list[ParsedMerge]:
                 "filtered": filter_predicate is not None,
                 "filter_predicate": filter_predicate,
                 "source_alias": _first_from_alias(using_body),
+                "inserts": bool(
+                    re.search(
+                        r"\bWHEN\s+NOT\s+MATCHED\b.*?\bTHEN\s+INSERT\b",
+                        # This statement only: up to its terminator.
+                        sql[after:].split(";", 1)[0],
+                        re.IGNORECASE | re.DOTALL,
+                    )
+                ),
                 "file_path": file_path,
             }
         )

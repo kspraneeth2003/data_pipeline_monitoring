@@ -598,7 +598,17 @@ def propose_checks(parsed: ParsedRepo) -> list[CheckProposal]:
     tables = _tables_by_fqn(parsed)
     proposals: list[CheckProposal] = []
 
+    inserted_into = {m["target"] for m in parsed["merges"] if m.get("inserts", True)}
     for merge in parsed["merges"]:
+        if not merge.get("inserts", True) and merge["target"] in inserted_into:
+            # Update-only, with another MERGE inserting into the same table -
+            # an SCD2 close step beside its open step. It edits rows the other
+            # one put there, so it says nothing about which rows should exist;
+            # parity comes from the inserting one. Taking this one instead is
+            # how SILVER.MEMBERS lost the open step's `OP <> 'D'` filter and
+            # reported every deleted member as lost. A lone update-only MERGE
+            # is still used: it is the only statement of the table's contract.
+            continue
         # Parity is attempted at every layer, not only from a landing table.
         # A row count is the fallback for a MERGE parity cannot describe -
         # no key in the ON clause, or no timestamp to settle against.
@@ -722,7 +732,12 @@ def assess_coverage(parsed: ParsedRepo, proposals: list[CheckProposal]) -> Cover
     read alongside "and 4 tables no rule could cover, for these reasons."
     """
     tables = _tables_by_fqn(parsed)
-    merges_by_target = {m["target"]: m for m in parsed["merges"]}
+    # The inserting MERGE is the one parity is derived from, so it is the one
+    # whose shortcomings explain a gap. Update-only ones only fill in when a
+    # table has nothing else.
+    merges_by_target: dict[str, ParsedMerge] = {}
+    for m in sorted(parsed["merges"], key=lambda m: m.get("inserts", True)):
+        merges_by_target[m["target"]] = m
 
     covered: dict[str, set[str]] = {}
     for proposal in proposals:

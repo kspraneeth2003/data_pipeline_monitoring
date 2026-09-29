@@ -145,3 +145,30 @@ def test_the_parser_records_the_merge_source_alias():
     merges = parse_merges(sql, "x.sql")
     # `WHERE` right after the table is a clause, not an alias.
     assert [m["source_alias"] for m in merges] == ["S", None]
+
+
+def test_scd2_parity_comes_from_the_merge_that_inserts():
+    # The SILVER.MEMBERS shape: an update-only close step with no delete
+    # filter, then the inserting open step that excludes tombstones. Parity
+    # from the close step counted every deleted member as lost.
+    from app.ingest.heuristic import propose_checks
+    from tests.test_heuristic import build_repo
+
+    sql = """
+    CREATE TABLE D.BRONZE.M_RAW (MEMBER_ID NUMBER, OP STRING, RAW_PAYLOAD VARIANT, LOADED_AT TIMESTAMP_NTZ);
+    CREATE TABLE D.SILVER.M (MEMBER_ID NUMBER, TIER STRING, VALID_FROM TIMESTAMP_NTZ,
+      VALID_TO TIMESTAMP_NTZ, IS_CURRENT BOOLEAN);
+    MERGE INTO D.SILVER.M tgt USING (
+      SELECT s.MEMBER_ID AS MEMBER_ID, s.RAW_PAYLOAD:tier::STRING AS TIER FROM D.BRONZE.M_RAW s
+      WHERE s.MEMBER_ID IS NOT NULL
+    ) src ON tgt.MEMBER_ID = src.MEMBER_ID AND tgt.IS_CURRENT = TRUE
+    WHEN MATCHED THEN UPDATE SET IS_CURRENT = FALSE;
+    MERGE INTO D.SILVER.M tgt USING (
+      SELECT b.MEMBER_ID AS MEMBER_ID, b.RAW_PAYLOAD:tier::STRING AS TIER FROM D.BRONZE.M_RAW b
+      WHERE b.OP <> 'D' AND b.MEMBER_ID IS NOT NULL
+    ) src ON tgt.MEMBER_ID = src.MEMBER_ID AND tgt.IS_CURRENT = TRUE
+    WHEN NOT MATCHED THEN INSERT (MEMBER_ID, TIER) VALUES (src.MEMBER_ID, src.TIER);
+    """
+    parity = [p for p in propose_checks(build_repo(sql)) if p["type"] == "BRONZE_TO_SILVER_PARITY"]
+    assert len(parity) == 1
+    assert "OP <> 'D'" in parity[0]["config"]["sourceFilter"]

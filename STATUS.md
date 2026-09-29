@@ -780,10 +780,6 @@ npm run dev
 
 ## Known rough edges / things to fix eventually
 
-- **SILVER.MEMBERS parity reports 28 lost members that are deletions.** The
-  table has two MERGEs (SCD2 close and open) and derivation took the one
-  without the `OP <> 'D'` filter, so tombstones read as loss. Verified: all 28
-  are `OP = 'D'`. Ours, not the pipeline's - see FLOW.md §2.1
 - **MERGEs inside the test-data procedure (`generator.sql`) are derived as
   pipeline hops.** `CUSTOMERS_RAW -> MEMBERS_RAW` now compiles and fails with
   a random filter and a synthetic payload. Untick or disable it until

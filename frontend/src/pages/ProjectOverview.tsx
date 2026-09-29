@@ -6,7 +6,20 @@ import { HealthPill } from "../components/HealthPill";
 import { StatusBadge } from "../components/StatusBadge";
 import { RunNowButton } from "../components/RunNowButton";
 import { PinButton } from "../components/PinButton";
-import { STAGES, matchesQuery } from "../lib/stages";
+import { CheckFilterBar } from "../components/CheckFilterBar";
+import { STAGES } from "../lib/stages";
+import {
+  applyFilters,
+  describeFilters,
+  facetCounts,
+  groupChecks,
+  hasActiveFilters,
+  kindsIn,
+  readFilters,
+  writeFilters,
+  type CheckFilters,
+  type CheckGroup,
+} from "../lib/check-filters";
 import { formatDateTime } from "../lib/time";
 
 /**
@@ -29,6 +42,9 @@ export function ProjectOverview() {
   const [error, setError] = useState<string | null>(null);
   const [checksError, setChecksError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Groups a person opened or closed by hand, keyed by grouping and group.
+  // Anything not in here follows the default in `isExpanded` below.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   // The active tab lives in the URL so a link to "the bronze -> silver checks
   // of Customer 360" is a link, not a sequence of clicks.
@@ -92,7 +108,26 @@ export function ProjectOverview() {
   const stage =
     (requestedStage && STAGES.find((s) => s.key === requestedStage)) ?? firstPopulated ?? STAGES[3];
   const stageChecks = byStage.get(stage.key) ?? [];
-  const visible = stageChecks.filter((c) => matchesQuery(c, query));
+  const filters = readFilters(searchParams, stage.key);
+  const filtering = hasActiveFilters(filters, query);
+  const visible = applyFilters(stageChecks, filters, query);
+  const counts = facetCounts(stageChecks, filters, query);
+
+  const setFilters = (next: CheckFilters) =>
+    setSearchParams(
+      (params) => {
+        // The tab has to be written out explicitly: with none in the URL the
+        // page opens on the first populated one, which a filter must not move.
+        const withStage = new URLSearchParams(params);
+        withStage.set("stage", stage.key);
+        return writeFilters(withStage, next, stage.key);
+      },
+      { replace: true },
+    );
+  const clearFilters = () => {
+    setQuery("");
+    setFilters({ ...filters, kinds: [], statuses: [] });
+  };
 
   // Pinned first, then whatever is broken, then alphabetical. A pin is a
   // standing instruction to keep something in view, so it outranks even a
@@ -105,6 +140,26 @@ export function ProjectOverview() {
     };
     return rank(a) - rank(b) || a.name.localeCompare(b.name);
   });
+
+  const groups = filters.group === "none" ? null : groupChecks(ordered, filters.group);
+  // Open by default where there is something to see: a group with a failure
+  // in it, every group once the list has been filtered down (the filter
+  // already said what to look at), or all of them when there are few enough
+  // that collapsing saves nothing. A hand toggle overrides all of that.
+  const isExpanded = (group: CheckGroup) =>
+    expanded[`${filters.group}:${group.key}`] ??
+    (group.broken > 0 || filtering || (groups?.length ?? 0) <= 4);
+  const toggleGroup = (group: CheckGroup) =>
+    setExpanded((prev) => ({ ...prev, [`${filters.group}:${group.key}`]: !isExpanded(group) }));
+  const setAllGroups = (open: boolean) =>
+    setExpanded((prev) => ({
+      ...prev,
+      ...Object.fromEntries((groups ?? []).map((g) => [`${filters.group}:${g.key}`, open])),
+    }));
+  // Grouped by table, every row in a group shares a database, so the column
+  // would repeat the heading's own prefix down the page.
+  const showDatabase = filters.group !== "table";
+  const columnCount = showDatabase ? 7 : 6;
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-10 sm:px-10">
@@ -217,13 +272,21 @@ export function ProjectOverview() {
           )}
         </div>
 
-        {stageChecks.length > 3 && (
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search name, rationale or table…"
-            className="mb-3 w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent focus:outline-none"
+        {/* Hidden on a near-empty tab, where filtering three rows is noise -
+            unless a filter is already set, e.g. arriving from a shared link,
+            which has to stay visible to be undone. */}
+        {(stageChecks.length > 3 || filtering) && (
+          <CheckFilterBar
+            query={query}
+            onQueryChange={setQuery}
+            filters={filters}
+            onFiltersChange={setFilters}
+            kinds={kindsIn(stageChecks)}
+            kindCounts={counts.kinds}
+            statusCounts={counts.statuses}
+            showSearch
+            active={filtering}
+            onClear={clearFilters}
           />
         )}
 
@@ -237,75 +300,111 @@ export function ProjectOverview() {
             </p>
           </div>
         ) : ordered.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-border px-6 py-10 text-center text-sm text-zinc-500">
-            No check in {stage.label} matches “{query}”.
-          </p>
-        ) : (
-          <div className="overflow-x-auto border border-border bg-surface shadow-sm">
-            <table className="min-w-full divide-y divide-border">
-              <thead className="bg-zinc-50 dark:bg-white/[0.03]">
-                <tr>
-                  <Th />
-                  <Th>Check</Th>
-                  <Th>Database</Th>
-                  <Th>Type</Th>
-                  <Th>Last run</Th>
-                  <Th>Status</Th>
-                  <Th />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {ordered.map((check) => {
-                  const lastRun = check.runs[0];
-                  return (
-                    <tr key={check.id} className="transition-colors dark:hover:bg-white/[0.02]">
-                      <td className="py-3 pl-3 pr-0 align-top">
-                        <PinButton
-                          checkId={check.id}
-                          pinned={check.pinned}
-                          checkName={check.name}
-                          onDone={reload}
-                        />
-                      </td>
-                      <td className="px-4 py-3">
-                        <Link
-                          to={`/projects/${slug}/databases/${check.database.slug}/checks/${check.id}`}
-                          className="font-medium text-foreground hover:text-accent"
-                        >
-                          {check.name}
-                        </Link>
-                        {lastRun?.message && (
-                          <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">{lastRun.message}</div>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3">
-                        <Link
-                          to={`/projects/${slug}/databases/${check.database.slug}`}
-                          className="font-mono text-xs text-zinc-500 hover:text-accent"
-                        >
-                          {check.database.name}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="rounded-md bg-zinc-100 px-1.5 py-0.5 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                          {check.type}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-zinc-500 dark:text-zinc-400">
-                        {formatDateTime(lastRun?.started_at)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge status={lastRun?.status ?? "NONE"} />
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-right">
-                        <RunNowButton checkId={check.id} onDone={reload} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center text-sm text-zinc-500">
+            <p>No check in {stage.label} matches {describeFilters(filters, query)}.</p>
+            <button type="button" onClick={clearFilters} className="mt-2 text-accent hover:underline">
+              Clear filters
+            </button>
           </div>
+        ) : (
+          <>
+            <div className="mb-2 flex items-center justify-between gap-3 text-xs text-zinc-500">
+              <span>
+                {filtering
+                  ? `Showing ${ordered.length} of ${stageChecks.length} checks`
+                  : `${stageChecks.length} checks`}
+                {groups &&
+                  ` in ${groups.length} ${filters.group === "table" ? "table" : "kind"}${groups.length === 1 ? "" : "s"}`}
+              </span>
+              {groups && groups.length > 1 && (
+                <span className="flex gap-3">
+                  <button type="button" onClick={() => setAllGroups(true)} className="hover:text-accent">
+                    Expand all
+                  </button>
+                  <button type="button" onClick={() => setAllGroups(false)} className="hover:text-accent">
+                    Collapse all
+                  </button>
+                </span>
+              )}
+            </div>
+            <div className="overflow-x-auto border border-border bg-surface shadow-sm">
+              <table className="min-w-full divide-y divide-border">
+                <thead className="bg-zinc-50 dark:bg-white/[0.03]">
+                  <tr>
+                    <Th />
+                    <Th>Check</Th>
+                    {showDatabase && <Th>Database</Th>}
+                    <Th>Type</Th>
+                    <Th>Last run</Th>
+                    <Th>Status</Th>
+                    <Th />
+                  </tr>
+                </thead>
+                {groups ? (
+                  groups.map((group) => {
+                    const open = isExpanded(group);
+                    return (
+                      <tbody key={group.key} className="divide-y divide-border border-b border-border">
+                        <tr className="bg-surface-raised">
+                          <td colSpan={columnCount} className="p-0">
+                            <button
+                              type="button"
+                              aria-expanded={open}
+                              onClick={() => toggleGroup(group)}
+                              className="flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-white/[0.02]"
+                            >
+                              <span className="w-3 font-mono text-xs text-zinc-500">{open ? "▾" : "▸"}</span>
+                              <span
+                                className={`min-w-0 flex-1 truncate text-sm text-foreground ${
+                                  group.mono ? "font-mono text-xs" : "font-medium"
+                                }`}
+                              >
+                                {group.label}
+                              </span>
+                              <span className="font-mono text-xs text-zinc-500">
+                                {group.checks.length} {group.checks.length === 1 ? "check" : "checks"}
+                              </span>
+                              <span className="w-24 text-right font-mono text-xs">
+                                {group.broken > 0 ? (
+                                  <span className="text-red-400">{group.broken} failing</span>
+                                ) : group.unrun === group.checks.length ? (
+                                  <span className="text-zinc-500">not run</span>
+                                ) : (
+                                  <span className="text-emerald-400">ok</span>
+                                )}
+                              </span>
+                            </button>
+                          </td>
+                        </tr>
+                        {open &&
+                          group.checks.map((check) => (
+                            <CheckRow
+                              key={check.id}
+                              check={check}
+                              slug={slug}
+                              showDatabase={showDatabase}
+                              onChanged={reload}
+                            />
+                          ))}
+                      </tbody>
+                    );
+                  })
+                ) : (
+                  <tbody className="divide-y divide-border">
+                    {ordered.map((check) => (
+                      <CheckRow
+                        key={check.id}
+                        check={check}
+                        slug={slug}
+                        showDatabase={showDatabase}
+                        onChanged={reload}
+                      />
+                    ))}
+                  </tbody>
+                )}
+              </table>
+            </div>
+          </>
         )}
       </section>
 
@@ -373,6 +472,59 @@ function AddCheckMenu({
         </div>
       )}
     </div>
+  );
+}
+
+/** One check, the same whether it sits in a flat list or under a group. */
+function CheckRow({
+  check,
+  slug,
+  showDatabase,
+  onChanged,
+}: {
+  check: Check;
+  slug: string;
+  showDatabase: boolean;
+  onChanged: () => void;
+}) {
+  const lastRun = check.runs[0];
+  return (
+    <tr className="transition-colors dark:hover:bg-white/[0.02]">
+      <td className="py-3 pl-3 pr-0 align-top">
+        <PinButton checkId={check.id} pinned={check.pinned} checkName={check.name} onDone={onChanged} />
+      </td>
+      <td className="px-4 py-3">
+        <Link
+          to={`/projects/${slug}/databases/${check.database.slug}/checks/${check.id}`}
+          className="font-medium text-foreground hover:text-accent"
+        >
+          {check.name}
+        </Link>
+        {lastRun?.message && <div className="mt-0.5 line-clamp-1 text-xs text-zinc-500">{lastRun.message}</div>}
+      </td>
+      {showDatabase && (
+        <td className="whitespace-nowrap px-4 py-3">
+          <Link
+            to={`/projects/${slug}/databases/${check.database.slug}`}
+            className="font-mono text-xs text-zinc-500 hover:text-accent"
+          >
+            {check.database.name}
+          </Link>
+        </td>
+      )}
+      <td className="px-4 py-3">
+        <span className="rounded-md bg-zinc-100 px-1.5 py-0.5 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+          {check.type}
+        </span>
+      </td>
+      <td className="px-4 py-3 text-sm text-zinc-500 dark:text-zinc-400">{formatDateTime(lastRun?.started_at)}</td>
+      <td className="px-4 py-3">
+        <StatusBadge status={lastRun?.status ?? "NONE"} />
+      </td>
+      <td className="whitespace-nowrap px-4 py-3 text-right">
+        <RunNowButton checkId={check.id} onDone={onChanged} />
+      </td>
+    </tr>
   );
 }
 

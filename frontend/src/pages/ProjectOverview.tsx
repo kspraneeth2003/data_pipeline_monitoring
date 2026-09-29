@@ -284,7 +284,6 @@ export function ProjectOverview() {
             kinds={kindsIn(stageChecks)}
             kindCounts={counts.kinds}
             statusCounts={counts.statuses}
-            showSearch
             active={filtering}
             onClear={clearFilters}
           />
@@ -315,6 +314,9 @@ export function ProjectOverview() {
                   : `${stageChecks.length} checks`}
                 {groups &&
                   ` in ${groups.length} ${filters.group === "table" ? "table" : "kind"}${groups.length === 1 ? "" : "s"}`}
+                {filtering && (
+                  <span className="text-zinc-400"> · {describeFilters(filters, query)}</span>
+                )}
               </span>
               {groups && groups.length > 1 && (
                 <span className="flex gap-3">

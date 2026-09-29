@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import {
   GROUP_OPTIONS,
   STATUS_OPTIONS,
@@ -8,11 +9,12 @@ import {
 } from "../lib/check-filters";
 
 /**
- * Search, the kind and status chips, and the grouping switch for one tab.
+ * Search, a Filter button, and the grouping switch - one row.
  *
- * Chips rather than dropdowns because the counts are the point: "Null rate 24,
- * Freshness 14" says what a tab holds before anything is clicked, and a chip
- * at 0 says there is nothing there without anyone having to try it.
+ * The categories live behind the button rather than as rows of chips: two
+ * rows of a dozen chips above every list was more chrome than list. What is
+ * applied still shows without opening it - the button carries the count, and
+ * the line above the table says the filters in words.
  */
 export function CheckFilterBar({
   query,
@@ -22,7 +24,6 @@ export function CheckFilterBar({
   kinds,
   kindCounts,
   statusCounts,
-  showSearch,
   active,
   onClear,
 }: {
@@ -30,136 +31,202 @@ export function CheckFilterBar({
   onQueryChange: (query: string) => void;
   filters: CheckFilters;
   onFiltersChange: (filters: CheckFilters) => void;
-  /** The kinds present in this tab. With one or none, there is nothing to filter by. */
+  /** The kinds present in this tab. With one or none, the Kind section is left out. */
   kinds: string[];
   kindCounts: Map<string, number>;
   statusCounts: Map<StatusKey, number>;
-  showSearch: boolean;
   active: boolean;
   onClear: () => void;
 }) {
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3">
+      <input
+        type="search"
+        value={query}
+        onChange={(e) => onQueryChange(e.target.value)}
+        placeholder="Search name, rationale or table…"
+        className="min-w-0 flex-1 basis-64 rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent focus:outline-none"
+      />
+      <FilterMenu
+        filters={filters}
+        onFiltersChange={onFiltersChange}
+        kinds={kinds}
+        kindCounts={kindCounts}
+        statusCounts={statusCounts}
+        active={active}
+        onClear={onClear}
+      />
+      <GroupSwitch value={filters.group} onChange={(group) => onFiltersChange({ ...filters, group })} />
+    </div>
+  );
+}
+
+function FilterMenu({
+  filters,
+  onFiltersChange,
+  kinds,
+  kindCounts,
+  statusCounts,
+  active,
+  onClear,
+}: {
+  filters: CheckFilters;
+  onFiltersChange: (filters: CheckFilters) => void;
+  kinds: string[];
+  kindCounts: Map<string, number>;
+  statusCounts: Map<StatusKey, number>;
+  active: boolean;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+
+  // Closes on a click anywhere else or on Escape - the two ways anyone
+  // expects to dismiss a menu without hunting for a close button.
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: PointerEvent) => {
+      if (root.current && !root.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   const toggle = <T extends string>(values: T[], value: T): T[] =>
     values.includes(value) ? values.filter((v) => v !== value) : [...values, value];
+  const selectedCount = filters.kinds.length + filters.statuses.length;
 
   return (
-    <div className="mb-3 space-y-2">
-      {showSearch && (
-        <input
-          type="search"
-          value={query}
-          onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="Search name, rationale or table…"
-          className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-foreground placeholder:text-zinc-500 focus:border-accent focus:outline-none"
-        />
-      )}
+    <div ref={root} className="relative">
+      <button
+        type="button"
+        aria-haspopup="true"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={`flex items-center gap-2 border px-3 py-2 text-sm transition-colors ${
+          selectedCount > 0 || open
+            ? "border-accent-line bg-accent-soft text-accent"
+            : "border-border bg-surface text-zinc-300 hover:border-zinc-600 hover:text-foreground"
+        }`}
+      >
+        <FunnelIcon />
+        Filter
+        {selectedCount > 0 && (
+          <span className="bg-accent px-1.5 font-mono text-[11px] text-accent-foreground">{selectedCount}</span>
+        )}
+      </button>
 
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
-        <div className="space-y-2">
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Filter checks"
+          className="absolute right-0 z-20 mt-1 w-72 border border-border bg-surface-raised shadow-xl"
+        >
           {kinds.length > 1 && (
-            <ChipRow label="Kind">
-              <Chip
-                label="All"
-                selected={filters.kinds.length === 0}
-                onClick={() => onFiltersChange({ ...filters, kinds: [] })}
-              />
+            <Section title="Kind">
               {kinds.map((kind) => (
-                <Chip
+                <Option
                   key={kind}
                   label={kindLabel(kind)}
                   count={kindCounts.get(kind) ?? 0}
-                  selected={filters.kinds.includes(kind)}
-                  onClick={() => onFiltersChange({ ...filters, kinds: toggle(filters.kinds, kind) })}
+                  checked={filters.kinds.includes(kind)}
+                  onChange={() => onFiltersChange({ ...filters, kinds: toggle(filters.kinds, kind) })}
                 />
               ))}
-            </ChipRow>
+            </Section>
           )}
-
-          <ChipRow label="Status">
-            <Chip
-              label="All"
-              selected={filters.statuses.length === 0}
-              onClick={() => onFiltersChange({ ...filters, statuses: [] })}
-            />
+          <Section title="Status">
             {STATUS_OPTIONS.map((option) => {
               const count = statusCounts.get(option.key) ?? 0;
-              const selected = filters.statuses.includes(option.key);
-              if (option.hideWhenEmpty && count === 0 && !selected) return null;
+              const checked = filters.statuses.includes(option.key);
+              if (option.hideWhenEmpty && count === 0 && !checked) return null;
               return (
-                <Chip
+                <Option
                   key={option.key}
                   label={option.label}
                   count={count}
-                  selected={selected}
+                  checked={checked}
                   tone={option.key === "FAILED" ? "red" : option.key === "ERROR" ? "amber" : undefined}
-                  onClick={() =>
+                  onChange={() =>
                     onFiltersChange({ ...filters, statuses: toggle(filters.statuses, option.key) })
                   }
                 />
               );
             })}
-          </ChipRow>
-        </div>
-
-        <div className="flex items-center gap-3">
-          {active && (
-            <button type="button" onClick={onClear} className="text-xs text-accent hover:underline">
-              Clear filters
+          </Section>
+          <div className="flex items-center justify-between border-t border-border px-3 py-2 text-xs">
+            <button
+              type="button"
+              onClick={onClear}
+              disabled={!active}
+              className="text-accent hover:underline disabled:cursor-default disabled:text-zinc-600 disabled:no-underline"
+            >
+              Clear all
             </button>
-          )}
-          <GroupSwitch value={filters.group} onChange={(group) => onFiltersChange({ ...filters, group })} />
+            <button type="button" onClick={() => setOpen(false)} className="text-zinc-400 hover:text-foreground">
+              Done
+            </button>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function ChipRow({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label={label}>
-      <span className="w-12 shrink-0 text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</span>
+    <fieldset className="border-b border-border px-3 py-2 last-of-type:border-b-0">
+      <legend className="sr-only">{title}</legend>
+      <p aria-hidden className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+        {title}
+      </p>
       {children}
-    </div>
+    </fieldset>
   );
 }
 
-function Chip({
+function Option({
   label,
   count,
-  selected,
+  checked,
   tone,
-  onClick,
+  onChange,
 }: {
   label: string;
-  count?: number;
-  selected: boolean;
+  count: number;
+  checked: boolean;
   /** A status colour for the count, so a failing total reads as one before it is read. */
   tone?: "red" | "amber";
-  onClick: () => void;
+  onChange: () => void;
 }) {
-  // An empty chip stays visible but dimmed - hiding it would make the row
-  // reshuffle as other filters change - and stays clickable only to undo it.
-  const empty = count === 0 && !selected;
-  const countTone =
-    count && tone === "red" ? "text-red-400" : count && tone === "amber" ? "text-amber-400" : "";
+  // An option that would show nothing stays listed but dimmed - removing it
+  // would make the list reshuffle as other filters change - and can only be
+  // unticked, never ticked into an empty result.
+  const empty = count === 0 && !checked;
+  const countTone = count && tone === "red" ? "text-red-400" : count && tone === "amber" ? "text-amber-400" : "text-zinc-500";
   return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      disabled={empty}
-      onClick={onClick}
-      className={`inline-flex items-center gap-1.5 border px-2 py-0.5 text-xs transition-colors ${
-        selected
-          ? "border-accent-line bg-accent-soft text-accent"
-          : "border-border text-zinc-400 hover:border-zinc-600 hover:text-foreground"
-      } ${empty ? "cursor-default opacity-40 hover:border-border hover:text-zinc-400" : ""}`}
+    <label
+      className={`flex items-center gap-2 py-1 text-sm ${
+        empty ? "cursor-default opacity-40" : "cursor-pointer text-foreground hover:text-accent"
+      }`}
     >
-      {label}
-      {count !== undefined && (
-        <span className={`font-mono text-[11px] ${selected ? "text-accent" : countTone || "text-zinc-500"}`}>
-          {count}
-        </span>
-      )}
-    </button>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={empty}
+        onChange={onChange}
+        className="h-3.5 w-3.5 accent-[var(--accent)]"
+      />
+      <span className="flex-1">{label}</span>
+      <span className={`font-mono text-xs ${countTone}`}>{count}</span>
+    </label>
   );
 }
 
@@ -174,10 +241,8 @@ function GroupSwitch({ value, onChange }: { value: GroupBy; onChange: (group: Gr
             type="button"
             aria-pressed={value === option.key}
             onClick={() => onChange(option.key)}
-            className={`px-2 py-0.5 text-xs transition-colors ${
-              value === option.key
-                ? "bg-accent-soft text-accent"
-                : "text-zinc-400 hover:text-foreground"
+            className={`px-2.5 py-2 text-xs transition-colors ${
+              value === option.key ? "bg-accent-soft text-accent" : "text-zinc-400 hover:text-foreground"
             }`}
           >
             {option.label}
@@ -185,5 +250,13 @@ function GroupSwitch({ value, onChange }: { value: GroupBy; onChange: (group: Gr
         ))}
       </div>
     </div>
+  );
+}
+
+function FunnelIcon() {
+  return (
+    <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M2 3h12l-4.5 5.5V13l-3-1.5v-3L2 3z" strokeLinejoin="round" />
+    </svg>
   );
 }

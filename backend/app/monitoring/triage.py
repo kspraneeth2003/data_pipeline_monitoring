@@ -229,6 +229,32 @@ def on_passed_run(db: Session, check: models.Check, run: models.CheckRun) -> Inc
     return incident
 
 
+def on_invalid_run(db: Session, check: models.Check, run: models.CheckRun) -> Incident | None:
+    """The check itself is broken, so it has not been observing anything.
+
+    If it opened an incident while its own SQL error was being reported as a
+    pipeline error, that incident was never about the data. It is cleared -
+    with the reason said out loud, in the app and on the Jira issue - rather
+    than left open blaming whoever last touched the pipeline.
+    """
+    incident = lifecycle.active_incident_for(db, check.id)
+    if incident is None:
+        return None
+    body = (
+        "Closed without action: this was a fault in the check's own SQL, not a problem "
+        "in the pipeline. The check is not monitoring this table until it is repaired, "
+        "and will not report on it in the meantime."
+    )
+    lifecycle.clear_incident(db, incident, body, check_run_id=run.id)
+    backend = ticket_backend()
+    if backend is not None and incident.ticket_key:
+        backend.transition(incident, done=True, comment=body)
+        incident.ticket_status = settings.jira_done_status
+        incident.ticket_moved_at = lifecycle.utcnow()
+    db.commit()
+    return incident
+
+
 def sync_ticket_state(db: Session, incidents: list[Incident]) -> int:
     """Refresh what Jira says about each incident's issue.
 
@@ -382,6 +408,9 @@ def reopen_closed_but_failing(db: Session) -> list[Incident]:
         if latest is None or latest.status in (
             RunStatus.PASSED.value,
             RunStatus.RUNNING.value,
+            # An invalid check is not failing - it is not observing at all -
+            # and it is the very thing that cleared this incident.
+            RunStatus.INVALID.value,
         ):
             continue
 

@@ -19,7 +19,7 @@ from app.checks.config_schemas import (
 
 @dataclass
 class CheckOutcome:
-    status: str  # PASSED | FAILED | ERROR
+    status: str  # PASSED | FAILED | ERROR (runner.py may turn an ERROR into INVALID)
     metrics: dict = field(default_factory=dict)
     message: str = ""
 

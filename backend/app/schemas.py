@@ -251,6 +251,9 @@ class ProjectHealth(BaseModel):
     passing: int
     failing: int
     erroring: int
+    # Checks whose own SQL is broken (last run INVALID). Not a health state -
+    # these tables are simply not being watched until the check is repaired.
+    not_monitored: int = 0
     never_run: int
     disabled: int
     open_incidents: int

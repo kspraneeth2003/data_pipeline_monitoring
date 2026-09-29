@@ -7,6 +7,13 @@ const STYLES: Record<string, { pill: string; dot: string }> = {
   IN_PROGRESS: { pill: "border-blue-500/40 bg-blue-500/10 text-blue-400", dot: "bg-blue-500" },
   DONE: { pill: "border-emerald-500/40 bg-emerald-500/10 text-emerald-400", dot: "bg-emerald-500" },
   NONE: { pill: "border-zinc-700 bg-zinc-800 text-zinc-400", dot: "bg-zinc-400" },
+  // Grey and dashed, deliberately unlike every alarm colour: the check is
+  // broken, the data is not, and nothing here should read as a failure.
+  INVALID: { pill: "border-dashed border-zinc-600 bg-transparent text-zinc-400", dot: "bg-zinc-500" },
+};
+
+const LABELS: Record<string, string> = {
+  INVALID: "Not monitored",
 };
 
 export function StatusBadge({ status }: { status: string }) {
@@ -14,7 +21,7 @@ export function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`inline-flex items-center gap-1.5 border px-2 py-0.5 font-mono text-[11px] uppercase tracking-[0.1em] ${style.pill}`}>
       <span className={`h-1.5 w-1.5 ${style.dot}`} />
-      {status.replace("_", " ")}
+      {LABELS[status] ?? status.replace("_", " ")}
     </span>
   );
 }

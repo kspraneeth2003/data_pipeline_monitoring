@@ -46,7 +46,11 @@ export type RcaResult = {
 
 export type CheckRun = {
   id: string;
-  status: "RUNNING" | "PASSED" | "FAILED" | "ERROR";
+  /**
+   * INVALID: the check's own SQL was wrong, so the run says nothing about the
+   * data. Shown as "not monitored", never as a failure.
+   */
+  status: "RUNNING" | "PASSED" | "FAILED" | "ERROR" | "INVALID";
   started_at: string;
   finished_at: string | null;
   duration_ms: number | null;
@@ -60,6 +64,8 @@ export type ProjectHealth = {
   passing: number;
   failing: number;
   erroring: number;
+  /** Checks whose own SQL is broken. Not a health state - just not watched. */
+  not_monitored: number;
   never_run: number;
   disabled: number;
   open_incidents: number;

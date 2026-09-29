@@ -55,6 +55,12 @@ class RunStatus(str, enum.Enum):
     PASSED = "PASSED"
     FAILED = "FAILED"
     ERROR = "ERROR"
+    # The check itself is wrong - SQL this application generated does not
+    # compile - so this run says nothing about the data. It is neither a pass
+    # nor a failure: it counts toward no health state, opens no incident and
+    # gets no RCA, and the UI shows the check as not monitored. See
+    # checks/defects.py for how it is told apart from a pipeline ERROR.
+    INVALID = "INVALID"
 
 
 class IncidentSeverity(str, enum.Enum):

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type Check, type CheckVersion } from "../lib/api";
+import { api, type Check, type CheckRun, type CheckVersion } from "../lib/api";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { formatDateTime } from "../lib/time";
 import { StatusBadge } from "../components/StatusBadge";
@@ -186,7 +186,17 @@ export function CheckDetail() {
                   </div>
                 </div>
                 {run.message && <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">{run.message}</p>}
-                {run.metrics !== null && Object.keys(run.metrics).length > 0 && (
+                <RunRepairNote run={run} />
+                {run.status === "INVALID" ? (
+                  // The raw compiler error is for whoever maintains DPM, not
+                  // for the person whose pipeline this is - kept, but folded.
+                  <details className="mt-2 text-xs text-zinc-500">
+                    <summary className="cursor-pointer hover:text-zinc-300">Diagnostics for DPM developers</summary>
+                    <pre className="mt-1 overflow-x-auto rounded-lg bg-black/30 p-2 text-zinc-400">
+                      {JSON.stringify(run.metrics?.diagnostics ?? run.metrics, null, 2)}
+                    </pre>
+                  </details>
+                ) : run.metrics !== null && Object.keys(run.metrics).length > 0 && (
                   <pre className="mt-2 overflow-x-auto rounded-lg bg-zinc-50 p-2 text-xs text-zinc-600 dark:bg-black/30 dark:text-zinc-400">
                     {JSON.stringify(run.metrics, null, 2)}
                   </pre>
@@ -351,5 +361,22 @@ function VersionHistory({
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * Says so when this run followed an automatic repair of the check's own SQL.
+ * Worth one line: the check changed underneath its reader, and the Versions
+ * tab holds the before and after.
+ */
+function RunRepairNote({ run }: { run: CheckRun }) {
+  const repair = run.metrics?.repair;
+  if (!repair || typeof repair !== "object") return null;
+  const note = (repair as { note?: unknown }).note;
+  return (
+    <p className="mt-2 border-l-2 border-accent-line pl-2 text-xs text-zinc-400">
+      This check&apos;s SQL was invalid and was repaired automatically before this run.
+      {typeof note === "string" && <span className="block text-zinc-500">{note}</span>}
+    </p>
   );
 }

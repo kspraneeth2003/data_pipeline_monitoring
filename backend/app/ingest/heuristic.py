@@ -22,6 +22,7 @@ up when the parser met a repo shape it does not understand.
 import re
 from typing import TypedDict
 
+from app.checks.defects import LocalizedColumns, localize_parity_columns
 from app.ingest.ddl_parser import ParsedColumn, ParsedMerge, ParsedRepo, ParsedTable
 
 # Schema and table naming that marks a raw landing layer. A bronze->silver
@@ -256,6 +257,28 @@ def _is_target_column(name: str, target_table: ParsedTable | None) -> bool:
     return name.upper() in {c["name"].upper() for c in target_table["columns"]}
 
 
+def _localize_merge(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> LocalizedColumns:
+    """The MERGE's column mapping, rewritten to be valid against its source table.
+
+    Its expressions are written against the MERGE's own aliases (`s.MEMBER_ID`)
+    and may reach joined tables or CTEs (`x.INDIVIDUAL_ID`). A parity check
+    reads the source table alone, so copied verbatim they do not compile - and
+    a check that is wrong on arrival reports our fault as the pipeline's.
+    """
+    source_table = tables.get(merge["source"] or "")
+    target_table = tables.get(merge["target"])
+    return localize_parity_columns(
+        [{"name": k["name"], "bronze": k["source_expr"], "silver": k["target_expr"]} for k in merge["key_columns"]],
+        [
+            {"name": v["name"], "bronze": v["source_expr"], "silver": v["target_expr"]}
+            for v in merge["value_columns"]
+            if _is_target_column(v["target_expr"], target_table)
+        ],
+        driving_alias=merge.get("source_alias"),
+        source_columns={c["name"] for c in source_table["columns"]} if source_table else None,
+    )
+
+
 def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckProposal | None:
     """Key-and-value parity for one MERGE, at whatever layer it sits.
 
@@ -334,6 +357,20 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
             f"report loss that is not real. Confirm it reads correctly."
         )
 
+    # The MERGE's expressions are written against its own aliases (`s.MEMBER_ID`)
+    # and may reach joined tables or CTEs (`x.INDIVIDUAL_ID`). The check reads
+    # the source table alone, so copied verbatim they do not compile - and a
+    # check that is wrong on arrival reports our fault as the pipeline's.
+    localized = _localize_merge(merge, tables)
+    if localized.blocking_reason:
+        return None
+    if localized.dropped:
+        concerns.append(
+            "Not compared, because they are not read from the source table and a two-table "
+            f"check cannot see them: {'; '.join(localized.dropped)}. Their correctness needs a "
+            "check on the table they come from."
+        )
+
     return {
         "key": f"parity:{source}->{target}",
         "name": f"{_table_of(target).title().replace('_', ' ')} {layer_phrase}: dedup + parity",
@@ -357,15 +394,8 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
             "sourceFilter": merge["filter_predicate"],
             "silverFilter": target_filter,
             "lagMinutes": DEFAULT_LAG_MINUTES,
-            "keyColumns": [
-                {"name": k["name"], "bronze": k["source_expr"], "silver": k["target_expr"]}
-                for k in merge["key_columns"]
-            ],
-            "valueColumns": [
-                {"name": v["name"], "bronze": v["source_expr"], "silver": v["target_expr"]}
-                for v in merge["value_columns"]
-                if _is_target_column(v["target_expr"], target_table)
-            ],
+            "keyColumns": localized.key_columns,
+            "valueColumns": localized.value_columns,
         },
         "source": "heuristic",
         "concerns": concerns,
@@ -668,6 +698,13 @@ def _parity_gap_reason(
         return (
             f"The MERGE reads {merge['source']}, which is not defined by any CREATE TABLE in "
             "this repository - so its columns, and any load timestamp, are unknown here."
+        )
+    blocking = _localize_merge(merge, tables).blocking_reason
+    if blocking:
+        return (
+            f"{blocking} A parity check compares one source table to this one; a key that "
+            "is looked up from another table needs a join-coverage check instead, which is "
+            "not built yet."
         )
     return (
         f"{merge['source']} has no load or update timestamp column, so there is no way to "

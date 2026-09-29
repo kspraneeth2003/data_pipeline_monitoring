@@ -59,6 +59,10 @@ class ParsedMerge(TypedDict):
     # boolean - is what lets a filtered MERGE get a parity check at all: apply
     # the same predicate to both sides and the two are comparable again.
     filter_predicate: str | None
+    # The alias the USING clause gives `source` (`FROM MEMBERS_RAW s` -> "S").
+    # The source expressions above are written against it, so anything that
+    # re-uses them outside this MERGE has to know it to strip it.
+    source_alias: str | None
     file_path: str
 
 
@@ -325,6 +329,27 @@ def _first_from_object(select_body: str) -> str | None:
     return normalize_fqn(matches[0]) if matches else None
 
 
+# Words that can follow a table name in FROM without being its alias.
+_NOT_AN_ALIAS = {
+    "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "FULL", "CROSS", "NATURAL", "ON",
+    "GROUP", "ORDER", "QUALIFY", "HAVING", "LIMIT", "UNION", "EXCEPT", "MINUS", "INTERSECT",
+    "WINDOW", "SAMPLE", "TABLESAMPLE", "AT", "BEFORE", "CHANGES", "MATCH_RECOGNIZE", "PIVOT",
+    "UNPIVOT", "LATERAL", "USING",
+}
+
+
+def _first_from_alias(select_body: str) -> str | None:
+    """The alias of the first FROM object, if it has one."""
+    match = re.search(
+        rf"\bFROM\s+{FQN}(?:\s+(?:AS\s+)?({IDENT}))?",
+        _strip_leading_ctes(select_body),
+        re.IGNORECASE,
+    )
+    if not match or not match.group(1) or match.group(1).upper() in _NOT_AN_ALIAS:
+        return None
+    return unquote(match.group(1))
+
+
 def parse_streams(sql: str) -> dict[str, str]:
     """Maps each stream to the table it reads.
 
@@ -460,6 +485,7 @@ def parse_merges(sql: str, file_path: str) -> list[ParsedMerge]:
                 "value_columns": value_columns,
                 "filtered": filter_predicate is not None,
                 "filter_predicate": filter_predicate,
+                "source_alias": _first_from_alias(using_body),
                 "file_path": file_path,
             }
         )

@@ -59,7 +59,10 @@ def _resolve_database(db: Session, project: models.Project, key: str) -> models.
 
 
 def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.ProjectHealth:
-    counts = {"PASSED": 0, "FAILED": 0, "ERROR": 0}
+    # INVALID is counted apart and never feeds the worst-state rollup below: a
+    # check whose own SQL is broken says nothing about the data, and reading it
+    # as a failure would put our fault on the user's pipeline.
+    counts = {"PASSED": 0, "FAILED": 0, "ERROR": 0, "INVALID": 0}
     never_run = disabled = 0
     last_run_at = None
 
@@ -107,6 +110,7 @@ def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.Projec
         passing=counts["PASSED"],
         failing=counts["FAILED"],
         erroring=counts["ERROR"],
+        not_monitored=counts["INVALID"],
         never_run=never_run,
         disabled=disabled,
         open_incidents=open_incidents,

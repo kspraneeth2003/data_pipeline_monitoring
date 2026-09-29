@@ -47,6 +47,25 @@ Every check in this system carries, without exception:
 This is a hard rule for derived, agent-authored and hand-written checks alike.
 A check missing any of the three is not a check, it is a guess with a schedule.
 
+### 2.1 Our faults are not the user's news
+
+The user only ever sees problems in **their data**. A check whose own SQL
+does not compile is our fault - the user did not write it and cannot fix it -
+so it never surfaces as an ERROR, an incident, an RCA or a Jira issue. It is
+repaired automatically where the repair compiles, and otherwise shown as *not
+monitored*: grey, outside every health rollup, with the raw compiler error
+folded away for whoever maintains DPM.
+
+It is not hidden outright, because a table whose only check is broken is
+unmonitored, and a page showing it green claims coverage nothing provides.
+
+The line between ours and theirs: a check that compiles but asserts something
+the pipeline's code never said (a filter we failed to lift, a mapping we
+misread) is also ours, and is fixed in derivation. What the pipeline's code
+*does* say being wrong - a MERGE losing rows, reading the wrong field - is
+theirs, and is exactly what the product exists to report. A column that really
+was dropped is theirs too, and still arrives as an error, in plain words.
+
 ## 3. Two families of test, four sections
 
 ### 3.1 Pipeline parity — *did the data move losslessly*

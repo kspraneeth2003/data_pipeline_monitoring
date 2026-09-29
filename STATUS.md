@@ -201,6 +201,39 @@ Parity against an SCD2 target is separately handled: `BronzeToSilverParityConfig
 gained `silverFilter`, set to `IS_CURRENT = TRUE` when the target's column shape
 says type-2. Without it that check fails forever on correct data and gets muted.
 
+### A broken check is not a pipeline error (`checks/defects.py`, `checks/repair.py`)
+
+Derivation copied MERGE source expressions verbatim - `s.MEMBER_ID`,
+`x.INDIVIDUAL_ID` - into checks that read the source table without that
+alias. 7 of Customer 360's 11 parity checks did not compile, and the RCA agent
+blamed the pipeline's last commit for our SQL, naming its author as owner.
+FLOW.md §2.1 has the rule this enforces.
+
+- **Derivation**: the parser now records each MERGE's FROM alias
+  (`ParsedMerge.source_alias`), and `defects.localize_parity_columns` rewrites
+  the mapping against the source table: its own alias stripped, value columns
+  from joined tables/CTEs/procedure variables dropped and named in the
+  proposal's concerns, and no parity at all when the *key* comes from a join
+  (the coverage report says why). One function, used by both paths below.
+- **Run time**: an ERROR run goes through `runner._resolve_error` before RCA or
+  triage. `defects.assess_error` decides pipeline vs defect - alias problems
+  first, then a compile error with every referenced column present live is
+  ours, one with a column missing is the pipeline moving. A defect is repaired
+  (compiled with `EXPLAIN` before it is saved, applied only where
+  `agent_may_rewrite`, else filed as a pending revision) and re-run; failing
+  that the run is **`INVALID`**.
+- **`INVALID`** is a new run status (plain string column, no migration). It
+  counts toward no health state (`ProjectHealth.not_monitored` instead), gets
+  no RCA, and `triage.on_invalid_run` clears any incident the check opened
+  while misreporting itself. The UI shows it as a grey dashed "Not monitored"
+  with the raw error under "Diagnostics for DPM developers".
+
+Verified on Customer 360: `GOLD.TRANSACTION` repaired and now FAILS on 264
+real missing invoices; POINTS_DAILY and INDIVIDUAL_ENGAGEMENT repaired and
+pass; GOLD.EMAIL and GOLD.LOYALTY_DAILY (keyed through the XREF join) are not
+monitored. Two repaired checks then failed for reasons that are *not* syntax -
+see the known rough edges.
+
 ### Parser fixes driven by the FCC reference repo
 
 Each of these was a case of deriving *nothing* while looking like it had derived
@@ -257,7 +290,11 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
       b2s_parity.py       BRONZE_TO_SILVER_PARITY: builds the single deterministic SQL statement
                             that proves silver is a deduplicated, lossless projection of bronze.
                             See the module docstring for why it is a FULL OUTER JOIN and not EXCEPT.
-      runner.py           execute_check(db, check_id): persists a run, runs RCA on failure, then
+      defects.py          Pure: is an errored run a pipeline problem or a defect in the check?
+                            Also localize_parity_columns, shared with derivation
+      repair.py           EXPLAIN-compiles, describes live tables, applies a repair or files it
+      runner.py           execute_check(db, check_id): persists a run, resolves an ERROR into
+                            repaired/INVALID first, runs RCA on failure, then
                             hands to monitoring/triage. It no longer files tickets itself -
                             that needs the incident's history, not one run
     ingest/               THE OTHER AGENTIC PART - repository -> project (see below)
@@ -742,6 +779,19 @@ npm run dev
 `frontend/src/index.css` defines the same CSS custom properties as before (`--background`, `--surface`, `--border`, `--accent`, `--accent-hover`, `--accent-foreground`, `--accent-soft`), exposed to Tailwind via `@theme inline`. Use these tokens (not raw `zinc-*`/`white`/`black`) in any new page or component.
 
 ## Known rough edges / things to fix eventually
+
+- **SILVER.MEMBERS parity reports 28 lost members that are deletions.** The
+  table has two MERGEs (SCD2 close and open) and derivation took the one
+  without the `OP <> 'D'` filter, so tombstones read as loss. Verified: all 28
+  are `OP = 'D'`. Ours, not the pipeline's - see FLOW.md §2.1
+- **MERGEs inside the test-data procedure (`generator.sql`) are derived as
+  pipeline hops.** `CUSTOMERS_RAW -> MEMBERS_RAW` now compiles and fails with
+  a random filter and a synthetic payload. Untick or disable it until
+  derivation skips procedures whose filters are nondeterministic
+- **A parity check can pass on nothing.** BI.INDIVIDUAL_ENGAGEMENT reports "0
+  settled key(s)" because GOLD.INDIVIDUAL's UPDATED_AT is rewritten every
+  run, so every row is always inside the settling lag. A pass that compared
+  zero rows should not read as green
 
 - **Neither agent has been run against a live model.** Everything below the
   model - prompts, tools, schemas, budgets, and every branch of the applying

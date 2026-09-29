@@ -32,7 +32,7 @@ export function kindLabel(type: string): string {
   return KIND_LABELS[type] ?? type;
 }
 
-export type StatusKey = "FAILED" | "ERROR" | "PASSED" | "RUNNING" | "NONE";
+export type StatusKey = "FAILED" | "ERROR" | "PASSED" | "RUNNING" | "INVALID" | "NONE";
 
 /**
  * Broken first, because that is the question the status row is for. RUNNING
@@ -43,12 +43,17 @@ export const STATUS_OPTIONS: { key: StatusKey; label: string; hideWhenEmpty?: bo
   { key: "ERROR", label: "Error" },
   { key: "PASSED", label: "Passing" },
   { key: "RUNNING", label: "Running", hideWhenEmpty: true },
+  { key: "INVALID", label: "Not monitored", hideWhenEmpty: true },
   { key: "NONE", label: "Never run" },
 ];
 
 export function checkStatus(check: Check): StatusKey {
   const status = check.runs[0]?.status;
-  return status === "FAILED" || status === "ERROR" || status === "PASSED" || status === "RUNNING"
+  return status === "FAILED" ||
+    status === "ERROR" ||
+    status === "PASSED" ||
+    status === "RUNNING" ||
+    status === "INVALID"
     ? status
     : "NONE";
 }

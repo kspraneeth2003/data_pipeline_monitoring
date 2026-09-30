@@ -417,3 +417,170 @@ export const api = {
   rejectRevision: (id: string) =>
     request<CheckRevision>(`/api/revisions/${id}/reject`, { method: "POST" }),
 };
+
+// --- Profiling --------------------------------------------------------------
+//
+// Column profiles and the anomalies found in them. Kept as its own client
+// object so the feature is additive: nothing above this line changed shape.
+
+export type ProfileRun = {
+  id: string;
+  status: "RUNNING" | "SUCCEEDED" | "ERROR";
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  row_count: number | null;
+  column_count: number | null;
+  anomaly_count: number;
+  message: string | null;
+};
+
+export type ProfileTarget = {
+  id: string;
+  object: string;
+  schedule: string;
+  enabled: boolean;
+  database: { id: string; name: string; slug: string };
+  last_run: ProfileRun | null;
+  successful_runs: number;
+  /** Successful runs still needed before history anomalies are judged. */
+  baseline_runs_needed: number;
+  open_anomalies: number;
+};
+
+export type AnomalySeverity = "HIGH" | "MEDIUM" | "LOW";
+
+export type ProfileAnomaly = {
+  id: string;
+  target_id: string;
+  object: string;
+  database_slug: string;
+  run_id: string;
+  column_name: string | null;
+  /** ANOMALY: against history. FINDING: true of one run. SCHEMA: columns moved. */
+  kind: "ANOMALY" | "FINDING" | "SCHEMA";
+  metric: string;
+  severity: AnomalySeverity;
+  observed: number | null;
+  expected: number | null;
+  lower: number | null;
+  upper: number | null;
+  message: string;
+  acknowledged_at: string | null;
+  created_at: string;
+};
+
+export type ColumnProfile = {
+  column_name: string;
+  data_type: string;
+  family: "NUMERIC" | "TEXT" | "TEMPORAL" | "BOOLEAN" | "OTHER";
+  ordinal: number;
+  row_count: number;
+  null_count: number;
+  null_ratio: number | null;
+  distinct_count: number | null;
+  blank_count: number | null;
+  min_value: string | null;
+  max_value: string | null;
+  /** Raw values behind min_value/max_value - a number, epoch seconds for a
+   *  timestamp, or a length for text - so a sort can compare them as numbers
+   *  rather than parsing the already-formatted display string. */
+  min_numeric: number | null;
+  max_numeric: number | null;
+  mean_numeric: number | null;
+};
+
+export type ProfileHistoryPoint = {
+  run_id: string;
+  at: string;
+  row_count: number | null;
+  columns: Record<string, { null_ratio: number | null; distinct_count: number | null; mean: number | null }>;
+};
+
+export type ProfileTargetDetail = ProfileTarget & {
+  columns: ColumnProfile[];
+  history: ProfileHistoryPoint[];
+  anomalies: ProfileAnomaly[];
+};
+
+export type DiscoverResult = {
+  added: string[];
+  already_profiled: string[];
+  tables: string[];
+  /** How many started profiling immediately, in the background. */
+  queued: number;
+};
+
+export type CatalogTable = {
+  object: string;
+  table: string;
+  /** From the warehouse's own metadata - no scan. */
+  row_count: number | null;
+  last_altered: string | null;
+  /** Null when this table is not profiled. */
+  target: ProfileTarget | null;
+};
+
+export type CatalogSchema = {
+  name: string;
+  tables: CatalogTable[];
+};
+
+export type CatalogDatabase = {
+  id: string;
+  name: string;
+  slug: string;
+  readable: boolean;
+  error: string | null;
+  schemas: CatalogSchema[];
+  /** When this database's table list was last read from Snowflake. Null before the first sync. */
+  synced_at: string | null;
+};
+
+export type SyncResult = {
+  database: string;
+  readable: boolean;
+  tables: number;
+  new_tables_queued: number;
+};
+
+export type SyncOut = {
+  synced_at: string;
+  databases: SyncResult[];
+};
+
+export const profilingApi = {
+  listTargets: (slug: string) => request<ProfileTarget[]>(`/api/projects/${slug}/profiling`),
+  createTarget: (slug: string, payload: { database_id: string; object: string; schedule?: string }) =>
+    request<ProfileTarget>(`/api/projects/${slug}/profiling/targets`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  // Fast: reads a cache in Postgres, not Snowflake. Refreshed by syncCatalog,
+  // or once automatically the first time a database's catalog is requested.
+  getCatalog: (slug: string) => request<CatalogDatabase[]>(`/api/projects/${slug}/profiling/catalog`),
+  // The live Snowflake read getCatalog no longer does on every call. Tracks
+  // and starts profiling any table found for the first time.
+  syncCatalog: (slug: string) => request<SyncOut>(`/api/projects/${slug}/profiling/sync`, { method: "POST" }),
+  discover: (slug: string, databaseId: string, schemaName?: string) =>
+    request<DiscoverResult>(`/api/projects/${slug}/profiling/discover`, {
+      method: "POST",
+      body: JSON.stringify({ database_id: databaseId, schema_name: schemaName ?? null }),
+    }),
+  runAll: (slug: string, databaseId: string) =>
+    request<{ queued: number; targets: number }>(`/api/projects/${slug}/profiling/run-all`, {
+      method: "POST",
+      body: JSON.stringify({ database_id: databaseId }),
+    }),
+  getTarget: (id: string) => request<ProfileTargetDetail>(`/api/profiling/targets/${id}`),
+  updateTarget: (id: string, payload: { enabled?: boolean; schedule?: string }) =>
+    request<ProfileTarget>(`/api/profiling/targets/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  deleteTarget: (id: string) => request<void>(`/api/profiling/targets/${id}`, { method: "DELETE" }),
+  runTarget: (id: string) => request<ProfileRun>(`/api/profiling/targets/${id}/run`, { method: "POST" }),
+  listAnomalies: (slug: string, includeAcknowledged = false) =>
+    request<ProfileAnomaly[]>(
+      `/api/projects/${slug}/anomalies${includeAcknowledged ? "?include_acknowledged=true" : ""}`,
+    ),
+  acknowledge: (id: string) =>
+    request<ProfileAnomaly>(`/api/profiling/anomalies/${id}/acknowledge`, { method: "POST" }),
+};

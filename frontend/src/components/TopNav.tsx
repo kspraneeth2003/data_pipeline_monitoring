@@ -38,6 +38,7 @@ export function TopNav() {
           { href: base, label: "Checks", exact: true },
           { href: `${base}/incidents`, label: "Incidents" },
           { href: `${base}/changes`, label: "Changes" },
+          { href: `${base}/profiling`, label: "Profiling" },
           { href: `${base}/connections`, label: "Connections" },
           { href: `${base}/databases`, label: "Databases", exact: true },
           { href: `${base}/settings`, label: "Settings" },

@@ -1,0 +1,470 @@
+import { useCallback, useEffect, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+
+import { AnomalyList } from "../components/AnomalyList";
+import { Breadcrumbs } from "../components/Breadcrumbs";
+import { profilingApi, type CatalogDatabase, type CatalogSchema, type CatalogTable, type ProfileAnomaly } from "../lib/api";
+import { relativeTime } from "../lib/time";
+
+/**
+ * What the data is actually like, across every table the project reaches.
+ *
+ * The table list is the warehouse's own catalog - every database, schema and
+ * table, read live from INFORMATION_SCHEMA - so nothing has to be typed in.
+ * The hierarchy is real (database contains schemas contains tables), so it is
+ * rendered as one: a database section holding its schemas, each holding a
+ * table of its own tables - not one flat table with a database name sharing
+ * a row with a "Table" column, which reads as data rather than as a heading.
+ * Both levels default open, since collapsing something nobody asked to
+ * collapse yet just hides the thing the page is for.
+ */
+
+function Chevron({ className = "" }: { className?: string }) {
+  return (
+    <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true" className={`shrink-0 transition-transform ${className}`}>
+      <path d="M2 1l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Also used, spinning, as the busy indicator on the button it sits in. */
+function ReloadIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true" className={`shrink-0 ${className}`}>
+      <path
+        d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function Stat({ label, value, tone }: { label: string; value: string; tone?: "alert" | "warn" }) {
+  const color = tone === "alert" ? "text-red-400" : tone === "warn" ? "text-amber-400" : "text-foreground";
+  return (
+    <div className="border border-border bg-surface px-4 py-3">
+      <p className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">{label}</p>
+      <p className={`mt-1 font-mono text-2xl ${color}`}>{value}</p>
+    </div>
+  );
+}
+
+function LastProfile({ table }: { table: CatalogTable }) {
+  const target = table.target;
+  const run = target?.last_run;
+  if (!target) return <span className="text-zinc-600">Not profiled</span>;
+  if (!run || run.status === "RUNNING") {
+    return (
+      <span className="inline-flex items-center gap-2 text-zinc-300">
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse bg-blue-500" />
+        Profiling…
+      </span>
+    );
+  }
+
+  const failed = run.status === "ERROR";
+  const learning = target.baseline_runs_needed > 0;
+  return (
+    <span className="inline-flex items-center gap-2" title={failed ? (run.message ?? "") : undefined}>
+      <span className={`h-1.5 w-1.5 shrink-0 ${failed ? "bg-amber-500" : "bg-emerald-500"}`} />
+      <span className={failed ? "text-amber-400" : "text-zinc-300"}>
+        {failed ? "Failed" : relativeTime(run.finished_at ?? run.started_at)}
+      </span>
+      {learning && !failed && (
+        <span
+          className="text-[11px] text-zinc-500"
+          title={`History anomalies start after ${target.successful_runs + target.baseline_runs_needed} runs. Findings such as an all-NULL column are reported from the first run.`}
+        >
+          learning {target.successful_runs}/{target.successful_runs + target.baseline_runs_needed}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function TableRow({
+  table,
+  slug,
+  databaseId,
+  onChanged,
+}: {
+  table: CatalogTable;
+  slug: string;
+  databaseId: string;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const target = table.target;
+
+  // Adding a table runs it straight away, so its first profile - and any
+  // finding - appears without waiting for the hourly schedule.
+  const act = async () => {
+    setBusy(true);
+    try {
+      const id = target
+        ? target.id
+        : (await profilingApi.createTarget(slug, { database_id: databaseId, object: table.object })).id;
+      await profilingApi.runTarget(id);
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  return (
+    <tr className="border-t border-border transition-colors hover:bg-white/[0.02]">
+      <td className="max-w-0 py-2.5 pl-12 pr-4">
+        {target ? (
+          <Link
+            to={`/projects/${slug}/profiling/${target.id}`}
+            className="block truncate font-mono text-sm text-foreground hover:text-accent"
+            title={table.object}
+          >
+            {table.table}
+          </Link>
+        ) : (
+          <div className="truncate font-mono text-sm text-zinc-400" title={table.object}>
+            {table.table}
+          </div>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-sm text-zinc-400">
+        {table.row_count === null ? "—" : table.row_count.toLocaleString()}
+      </td>
+      <td className="whitespace-nowrap px-4 py-2.5 text-sm">
+        <LastProfile table={table} />
+      </td>
+      <td className="whitespace-nowrap px-4 py-2.5 text-sm">
+        {target && target.open_anomalies > 0 ? (
+          <Link
+            to={`/projects/${slug}/profiling/${target.id}`}
+            className="border border-red-500/40 bg-red-500/10 px-1.5 py-0.5 font-mono text-xs text-red-400 hover:border-red-400"
+          >
+            {target.open_anomalies} open
+          </Link>
+        ) : (
+          <span className="text-zinc-600">—</span>
+        )}
+      </td>
+      <td className="whitespace-nowrap px-4 py-2.5 text-right">
+        <button
+          type="button"
+          onClick={act}
+          disabled={busy}
+          title={target ? "Run this profile now" : "Profile this table now"}
+          aria-label={target ? "Run this profile now" : "Profile this table now"}
+          className={`inline-flex h-7 w-7 items-center justify-center border transition-colors disabled:opacity-50 ${
+            target
+              ? "border-border text-zinc-300 hover:border-accent hover:text-foreground"
+              : "border-accent-line bg-accent-soft text-accent hover:bg-accent hover:text-accent-foreground"
+          }`}
+        >
+          <ReloadIcon className={busy ? "animate-spin" : ""} />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function SchemaSection({
+  schema,
+  slug,
+  database,
+  onChanged,
+}: {
+  schema: CatalogSchema;
+  slug: string;
+  database: CatalogDatabase;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const remaining = schema.tables.filter((t) => !t.target).length;
+
+  const profileSchema = async (e: React.MouseEvent) => {
+    e.preventDefault(); // inside <summary> - a plain click would also toggle the disclosure
+    setBusy(true);
+    try {
+      await profilingApi.discover(slug, database.id, schema.name);
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  return (
+    <details open className="group/schema border-t border-border first:border-t-0">
+      <summary className="flex list-none items-center justify-between gap-4 py-2 pl-8 pr-4 [&::-webkit-details-marker]:hidden">
+        <span className="flex min-w-0 cursor-pointer items-center gap-2">
+          <Chevron className="text-zinc-400 group-open/schema:rotate-90" />
+          <span className="truncate font-mono text-xs uppercase tracking-[0.15em] text-zinc-200">
+            {schema.name} · {schema.tables.length}
+          </span>
+        </span>
+        {remaining > 0 && schema.tables.length > 1 && (
+          <button
+            type="button"
+            onClick={profileSchema}
+            disabled={busy}
+            className="shrink-0 whitespace-nowrap text-[11px] text-accent hover:underline disabled:opacity-50"
+          >
+            {busy ? "Adding…" : `Profile schema (${remaining})`}
+          </button>
+        )}
+      </summary>
+      <table className="w-full table-fixed text-left">
+        <colgroup>
+          <col />
+          <col className="w-28" />
+          <col className="w-56" />
+          <col className="w-28" />
+          <col className="w-28" />
+        </colgroup>
+        <thead>
+          <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
+            <th className="py-2 pl-12 pr-4 font-normal">Table</th>
+            <th className="px-4 py-2 text-right font-normal">Rows</th>
+            <th className="px-4 py-2 font-normal">Last profile</th>
+            <th className="px-4 py-2 font-normal">Findings</th>
+            <th className="px-4 py-2" />
+          </tr>
+        </thead>
+        <tbody>
+          {schema.tables.map((table) => (
+            <TableRow key={table.object} table={table} slug={slug} databaseId={database.id} onChanged={onChanged} />
+          ))}
+        </tbody>
+      </table>
+    </details>
+  );
+}
+
+function DatabaseSection({
+  database,
+  slug,
+  onChanged,
+}: {
+  database: CatalogDatabase;
+  slug: string;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const tables = database.schemas.flatMap((s) => s.tables);
+  const remaining = tables.filter((t) => !t.target).length;
+  const profiled = tables.length - remaining;
+
+  // Both start profiling in the background right away; the page refreshes
+  // itself until the runs land.
+  const profileAll = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      if (remaining > 0) await profilingApi.discover(slug, database.id);
+      else await profilingApi.runAll(slug, database.id);
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  const summary = (
+    <summary className="flex list-none items-center justify-between gap-4 bg-surface-raised px-4 py-2.5 [&::-webkit-details-marker]:hidden">
+      <span className="flex min-w-0 cursor-pointer items-center gap-2">
+        {database.readable && <Chevron className="text-zinc-400 group-open/db:rotate-90" />}
+        <span className="truncate font-mono text-sm font-medium text-foreground">{database.name}</span>
+        <span className="whitespace-nowrap text-xs text-zinc-500">
+          {database.readable ? `${profiled} of ${tables.length} profiled` : "not readable"}
+        </span>
+      </span>
+      {database.readable && tables.length > 0 && (
+        <button
+          type="button"
+          onClick={profileAll}
+          disabled={busy}
+          title={
+            remaining > 0
+              ? "Profiles every remaining table now, then hourly. Each profile is one scan of its table."
+              : "Re-profiles every table in this database now."
+          }
+          className="shrink-0 whitespace-nowrap text-xs text-accent hover:underline disabled:opacity-50"
+        >
+          {busy ? "Starting…" : remaining > 0 ? `Profile all ${remaining}` : `Run all ${profiled}`}
+        </button>
+      )}
+    </summary>
+  );
+
+  // An unreadable database has nothing to expand - the reason is the whole
+  // story, so it is shown flat rather than as a disclosure with no content.
+  if (!database.readable) {
+    return (
+      <div className="border-t border-border first:border-t-0">
+        <div className="flex items-center justify-between gap-4 bg-surface-raised px-4 py-2.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-mono text-sm font-medium text-foreground">{database.name}</span>
+            <span className="whitespace-nowrap text-xs text-zinc-500">not readable</span>
+          </span>
+        </div>
+        <p className="px-4 py-2.5 text-xs text-zinc-500" title={database.error ?? undefined}>
+          This connection can't read {database.name} - it was removed, or its role hasn't been granted access.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <details open className="group/db border-t border-border first:border-t-0">
+      {summary}
+      {tables.length === 0 ? (
+        <p className="px-4 py-2.5 text-xs text-zinc-500">No tables.</p>
+      ) : (
+        database.schemas.map((schema) => (
+          <SchemaSection key={schema.name} schema={schema} slug={slug} database={database} onChanged={onChanged} />
+        ))
+      )}
+    </details>
+  );
+}
+
+export function ProjectProfiling() {
+  const { slug = "" } = useParams();
+  const [catalog, setCatalog] = useState<CatalogDatabase[] | null>(null);
+  const [anomalies, setAnomalies] = useState<ProfileAnomaly[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    profilingApi
+      .getCatalog(slug)
+      .then((c) => {
+        setCatalog(c);
+        setError(null);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Could not load the catalog"));
+    profilingApi.listAnomalies(slug).then(setAnomalies).catch(() => setAnomalies([]));
+  }, [slug]);
+
+  useEffect(load, [load]);
+
+  // While any table is mid-profile, refresh every few seconds so results
+  // appear on their own. Capped so a stuck run cannot poll forever.
+  const inFlight = (catalog ?? []).some((d) =>
+    d.schemas.some((s) => s.tables.some((t) => t.target && (!t.target.last_run || t.target.last_run.status === "RUNNING"))),
+  );
+  const [polls, setPolls] = useState(0);
+  useEffect(() => {
+    if (!inFlight || polls > 90) return;
+    const timer = window.setTimeout(() => {
+      setPolls((n) => n + 1);
+      load();
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [inFlight, polls, load]);
+
+  // A user action starts a fresh polling window.
+  const refresh = useCallback(() => {
+    setPolls(0);
+    load();
+  }, [load]);
+
+  const acknowledge = async (id: string) => {
+    await profilingApi.acknowledge(id);
+    load();
+  };
+
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+
+  // Sync is the only thing on this page that reads Snowflake - everything
+  // else reads what the last sync found, which is what keeps the page fast.
+  const sync = async () => {
+    setSyncing(true);
+    setSyncNote(null);
+    try {
+      const result = await profilingApi.syncCatalog(slug);
+      const newTables = result.databases.reduce((n, d) => n + d.new_tables_queued, 0);
+      setSyncNote(
+        newTables > 0
+          ? `Found and started profiling ${newTables} new table${newTables === 1 ? "" : "s"}.`
+          : "Everything is up to date.",
+      );
+    } catch (e) {
+      setSyncNote(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setSyncing(false);
+      refresh();
+    }
+  };
+
+  const tables = catalog?.flatMap((d) => d.schemas.flatMap((s) => s.tables)) ?? [];
+  const profiled = tables.filter((t) => t.target).length;
+  const unreadable = catalog?.filter((d) => !d.readable).length ?? 0;
+  const oldestSync = (catalog ?? []).reduce<string | null>(
+    (oldest, d) => (d.synced_at && (!oldest || d.synced_at < oldest) ? d.synced_at : oldest),
+    null,
+  );
+
+  return (
+    <div className="mx-auto max-w-6xl px-6 py-8">
+      <Breadcrumbs items={[{ label: slug, to: `/projects/${slug}` }, { label: "Profiling" }]} />
+
+      <h1 className="text-xl font-semibold text-foreground">Profiling</h1>
+      <p className="mt-1 max-w-2xl text-sm text-zinc-500">
+        Each column's null rate, distinct values, ranges and lengths, compared with its own history. No rules
+        needed - it catches what nobody wrote a check for.
+      </p>
+
+      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <Stat label="Tables profiled" value={catalog ? `${profiled} / ${tables.length}` : "—"} />
+        <Stat label="Open findings" value={String(anomalies.length)} tone={anomalies.length ? "alert" : undefined} />
+        {unreadable > 0 && <Stat label="Unreadable databases" value={String(unreadable)} tone="warn" />}
+      </div>
+
+      {anomalies.length > 0 && (
+        <section className="mt-8">
+          <h2 className="mb-2 font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">Open findings</h2>
+          <AnomalyList anomalies={anomalies} slug={slug} onAcknowledge={acknowledge} empty="" />
+        </section>
+      )}
+
+      <section className="mt-8">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">Tables</h2>
+          <div className="flex items-center gap-3">
+            {oldestSync && <span className="text-xs text-zinc-500">synced {relativeTime(oldestSync)}</span>}
+            <button
+              type="button"
+              onClick={sync}
+              disabled={syncing}
+              title="Reads each database's table list from Snowflake again, and starts profiling anything new it finds."
+              className="inline-flex items-center gap-1.5 border border-border px-2.5 py-1 text-xs text-foreground transition-colors hover:border-accent disabled:opacity-50"
+            >
+              <ReloadIcon className={syncing ? "animate-spin" : ""} />
+              {syncing ? "Syncing…" : "Sync"}
+            </button>
+          </div>
+        </div>
+        {syncNote && <p className="mb-3 text-xs text-zinc-400">{syncNote}</p>}
+        {error && <p className="text-sm text-amber-400">{error}</p>}
+        {!catalog && !error && <p className="text-sm text-zinc-500">Reading table lists from the warehouse…</p>}
+        {catalog && catalog.length === 0 && (
+          <p className="text-sm text-zinc-500">
+            This project has no databases yet.{" "}
+            <Link to={`/projects/${slug}/databases/new`} className="text-accent hover:underline">
+              Add one
+            </Link>
+            .
+          </p>
+        )}
+        {catalog && catalog.length > 0 && (
+          <div className="border border-border bg-surface">
+            {catalog.map((database) => (
+              <DatabaseSection key={database.id} database={database} slug={slug} onChanged={refresh} />
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

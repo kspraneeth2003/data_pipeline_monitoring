@@ -317,6 +317,14 @@ export type CheckVersion = {
   created_at: string;
 };
 
+/** A short query listing the rows behind one finding. Mirrors backend/app/checks/drilldown.py. */
+export type Drilldown = {
+  /** The run metric it lists - offered only when that number is non-zero. */
+  metric: string;
+  label: string;
+  sql: string;
+};
+
 export type Check = {
   id: string;
   name: string;
@@ -324,6 +332,7 @@ export type Check = {
   rationale: string | null;
   statements: CheckStatement[];
   statements_error: string | null;
+  drilldowns: Drilldown[];
   type: string;
   schedule: string;
   enabled: boolean;

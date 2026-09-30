@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api, type Check, type CheckRun, type CheckVersion } from "../lib/api";
+import { api, type Check, type CheckRun, type CheckVersion, type Drilldown } from "../lib/api";
 import { Breadcrumbs } from "../components/Breadcrumbs";
 import { formatDateTime } from "../lib/time";
 import { StatusBadge } from "../components/StatusBadge";
@@ -140,6 +140,7 @@ export function CheckDetail() {
           <>
             <LatestRun
               run={check.runs[0]}
+              drilldowns={check.drilldowns}
               onShowRuns={() => setSearchParams({ tab: "runs" }, { replace: true })}
             />
             <CheckLogic rationale={check.rationale} />
@@ -191,7 +192,7 @@ export function CheckDetail() {
                   </div>
                 </div>
                 {run.explanation ? (
-                  <RunExplanation run={run} />
+                  <RunExplanation run={run} drilldowns={check.drilldowns} />
                 ) : (
                   run.message && <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">{run.message}</p>
                 )}
@@ -386,7 +387,15 @@ function VersionHistory({
  * The latest run, at the top of the overview - the first thing anyone opening
  * a check wants to know is what it last found, not how it is configured.
  */
-function LatestRun({ run, onShowRuns }: { run: CheckRun | undefined; onShowRuns: () => void }) {
+function LatestRun({
+  run,
+  drilldowns,
+  onShowRuns,
+}: {
+  run: CheckRun | undefined;
+  drilldowns: Drilldown[];
+  onShowRuns: () => void;
+}) {
   if (!run) return null;
   return (
     <section className="mb-6 rounded-xl border border-border bg-surface p-4 shadow-sm">
@@ -401,7 +410,7 @@ function LatestRun({ run, onShowRuns }: { run: CheckRun | undefined; onShowRuns:
         </button>
       </div>
       {run.explanation ? (
-        <RunExplanation run={run} />
+        <RunExplanation run={run} drilldowns={drilldowns} />
       ) : (
         run.message && <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">{run.message}</p>
       )}

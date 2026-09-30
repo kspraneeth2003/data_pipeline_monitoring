@@ -1,4 +1,5 @@
-import type { CheckRun } from "../lib/api";
+import { useState } from "react";
+import type { CheckRun, Drilldown } from "../lib/api";
 
 // Reader-facing names for the metrics a check can report without asserting.
 // Keys match `ParityMetric` / `Scd2Metric` in backend/app/checks/config_schemas.py.
@@ -41,11 +42,14 @@ function sampleText(value: unknown): string {
  * samples and reported metrics underneath come straight from the run, so a
  * reader can check the sentence against the figures it was written from.
  */
-export function RunExplanation({ run }: { run: CheckRun }) {
+export function RunExplanation({ run, drilldowns = [] }: { run: CheckRun; drilldowns?: Drilldown[] }) {
+  const [open, setOpen] = useState(false);
   const explanation = run.explanation;
   if (!explanation) return null;
 
   const metrics = run.metrics ?? {};
+  // Only findings this run actually has: a query for "0 missing" is noise.
+  const offered = drilldowns.filter((d) => Number(metrics[d.metric] ?? 0) > 0);
   const reported = (metrics.reported ?? {}) as Reported;
   const samples = (metrics.samples ?? {}) as Record<string, unknown>;
   const sampleRows = Object.entries(SAMPLE_LABELS)
@@ -61,12 +65,21 @@ export function RunExplanation({ run }: { run: CheckRun }) {
     <div className="mt-2 border-l-2 border-accent-line bg-accent-soft px-3 py-2">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
         <span className="font-mono text-[11px] uppercase tracking-[0.1em] text-accent">What this run found</span>
-        <span
-          className="text-[11px] text-zinc-500"
-          title={explanation.rejected ? `A model draft was discarded: ${explanation.rejected}` : undefined}
-        >
-          {source}
-          {explanation.reusedFromRunId && " · unchanged since an earlier run"}
+        <span className="flex items-baseline gap-3 text-[11px] text-zinc-500">
+          <span title={explanation.rejected ? `A model draft was discarded: ${explanation.rejected}` : undefined}>
+            {source}
+            {explanation.reusedFromRunId && " · unchanged since an earlier run"}
+          </span>
+          {offered.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setOpen(!open)}
+              aria-expanded={open}
+              className="text-zinc-400 underline-offset-2 transition-colors hover:text-accent hover:underline"
+            >
+              {open ? "Hide queries" : `Queries (${offered.length})`}
+            </button>
+          )}
         </span>
       </div>
       <p className="mt-1 text-sm text-foreground">{explanation.text}</p>
@@ -79,6 +92,8 @@ export function RunExplanation({ run }: { run: CheckRun }) {
             .join(" · ")}
         </p>
       )}
+
+      {open && <DrilldownList drilldowns={offered} metrics={metrics} />}
 
       {sampleRows.length > 0 && (
         <dl className="mt-1.5 space-y-0.5 text-xs text-zinc-500">
@@ -93,6 +108,50 @@ export function RunExplanation({ run }: { run: CheckRun }) {
           ))}
         </dl>
       )}
+    </div>
+  );
+}
+
+/**
+ * The short "show me the rows" query for each finding, behind the Queries
+ * button. Each lists exactly what its count on the run counts, and is meant to
+ * be pasted into Snowflake as-is; the check's own statement stays on the SQL tab.
+ */
+function DrilldownList({ drilldowns, metrics }: { drilldowns: Drilldown[]; metrics: Record<string, unknown> }) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copy = async (drilldown: Drilldown) => {
+    try {
+      await navigator.clipboard.writeText(drilldown.sql);
+      setCopied(drilldown.metric);
+      window.setTimeout(() => setCopied((current) => (current === drilldown.metric ? null : current)), 1500);
+    } catch {
+      setCopied(null);
+    }
+  };
+
+  return (
+    <div className="mt-2 space-y-2">
+      {drilldowns.map((drilldown) => (
+        <div key={drilldown.metric} className="border border-border bg-background">
+          <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1 text-xs">
+            <span className="text-zinc-600 dark:text-zinc-300">
+              {drilldown.label}
+              <span className="ml-1.5 font-mono text-zinc-500">{Number(metrics[drilldown.metric]).toLocaleString()}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => copy(drilldown)}
+              className="text-[11px] text-zinc-500 transition-colors hover:text-accent"
+            >
+              {copied === drilldown.metric ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <pre className="max-h-56 overflow-auto px-2 py-1.5 font-mono text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">
+            {drilldown.sql}
+          </pre>
+        </div>
+      ))}
     </div>
   );
 }

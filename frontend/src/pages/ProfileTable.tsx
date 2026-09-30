@@ -37,6 +37,77 @@ const trimTime = (v: string | null) => (v && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/
 const minText = (c: ColumnProfile) => (c.family === "TEMPORAL" ? trimTime(c.min_value) : c.min_value) ?? "—";
 const maxText = (c: ColumnProfile) => (c.family === "TEMPORAL" ? trimTime(c.max_value) : c.max_value) ?? "—";
 
+type SortKey = "column" | "null" | "distinct" | "blank" | "min" | "max" | "mean";
+type Sort = { key: SortKey; dir: "asc" | "desc" };
+
+/** A column's blank rate as a fraction of non-null rows - the same number the Blank cell shows. */
+function blankRatio(c: ColumnProfile): number | null {
+  const nonNull = c.row_count - c.null_count;
+  return c.blank_count === null || nonNull === 0 ? null : c.blank_count / nonNull;
+}
+
+function sortValue(c: ColumnProfile, key: SortKey): string | number | null {
+  switch (key) {
+    case "column":
+      return c.column_name;
+    case "null":
+      return c.null_ratio;
+    case "distinct":
+      return c.distinct_count;
+    case "blank":
+      return blankRatio(c);
+    case "min":
+      return c.min_numeric;
+    case "max":
+      return c.max_numeric;
+    case "mean":
+      return c.mean_numeric;
+  }
+}
+
+/** Up and down triangles stacked, like ⇕ - the direction not currently active is dimmed rather than hidden,
+ *  so the header always shows "this can be sorted" and, once clicked, which way it currently is. */
+function SortIcon({ direction }: { direction: "asc" | "desc" | null }) {
+  return (
+    <svg width="8" height="11" viewBox="0 0 8 11" aria-hidden="true" className="shrink-0">
+      <path d="M4 0L7.5 4.5H0.5L4 0Z" fill="currentColor" opacity={direction === "asc" ? 1 : 0.35} />
+      <path d="M4 11L0.5 6.5H7.5L4 11Z" fill="currentColor" opacity={direction === "desc" ? 1 : 0.35} />
+    </svg>
+  );
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  title,
+  align = "left",
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: Sort | null;
+  onSort: (key: SortKey) => void;
+  title?: string;
+  align?: "left" | "right";
+}) {
+  const active = sort?.key === sortKey;
+  return (
+    <th className={`font-normal ${align === "right" ? "text-right" : "text-left"}`} title={title}>
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex w-full items-center gap-1.5 px-4 py-2.5 transition-colors hover:text-foreground ${
+          align === "right" ? "flex-row-reverse" : ""
+        } ${active ? "text-foreground" : "text-zinc-500"}`}
+      >
+        {label}
+        <SortIcon direction={active ? sort.dir : null} />
+      </button>
+    </th>
+  );
+}
+
 export function ProfileTable() {
   const { slug = "", targetId = "" } = useParams();
   const navigate = useNavigate();
@@ -44,6 +115,7 @@ export function ProfileTable() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [showAcknowledged, setShowAcknowledged] = useState(false);
+  const [sort, setSort] = useState<Sort | null>(null);
 
   const load = useCallback(() => {
     profilingApi
@@ -101,6 +173,31 @@ export function ProfileTable() {
     await profilingApi.acknowledge(id);
     load();
   };
+
+  // Click cycles a header through ascending, descending, then back to the
+  // table's own column order - so "un-sorting" is always one more click away
+  // rather than needing a separate reset control.
+  const toggleSort = (key: SortKey) => {
+    setSort((prev) => {
+      if (!prev || prev.key !== key) return { key, dir: "asc" };
+      if (prev.dir === "asc") return { key, dir: "desc" };
+      return null;
+    });
+  };
+
+  // Nulls sort to the end regardless of direction - "unranked" is not the
+  // same as "smallest", and ascending sort putting every all-NULL column at
+  // the top would bury the columns that actually have the lowest values.
+  const sortedColumns = [...detail.columns].sort((a, b) => {
+    if (!sort) return a.ordinal - b.ordinal;
+    const av = sortValue(a, sort.key);
+    const bv = sortValue(b, sort.key);
+    if (av === null && bv === null) return 0;
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    const cmp = typeof av === "string" || typeof bv === "string" ? String(av).localeCompare(String(bv)) : av - bv;
+    return sort.dir === "asc" ? cmp : -cmp;
+  });
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -202,28 +299,41 @@ export function ProfileTable() {
             <table className="w-full text-left">
               <thead>
                 <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
-                  <th className="px-4 py-2.5 font-normal">Column</th>
-                  <th className="px-4 py-2.5 font-normal" title="% of rows where the value is NULL - the field has nothing stored">
-                    Null
-                  </th>
-                  <th className="px-4 py-2.5 font-normal">Distinct</th>
-                  <th
-                    className="px-4 py-2.5 font-normal"
+                  <SortableHeader label="Column" sortKey="column" sort={sort} onSort={toggleSort} />
+                  <SortableHeader
+                    label="Null"
+                    sortKey="null"
+                    sort={sort}
+                    onSort={toggleSort}
+                    title="% of rows where the value is NULL - the field has nothing stored"
+                  />
+                  <SortableHeader label="Distinct" sortKey="distinct" sort={sort} onSort={toggleSort} />
+                  <SortableHeader
+                    label="Blank"
+                    sortKey="blank"
+                    sort={sort}
+                    onSort={toggleSort}
                     title="% of non-null rows that are an empty or whitespace-only string - a value that passes NOT NULL but carries nothing"
-                  >
-                    Blank
-                  </th>
-                  <th className="px-4 py-2.5 font-normal" title="Text columns show the shortest value's length, not the value">
-                    Min
-                  </th>
-                  <th className="px-4 py-2.5 font-normal" title="Text columns show the longest value's length, not the value">
-                    Max
-                  </th>
-                  <th className="px-4 py-2.5 font-normal">Mean</th>
+                  />
+                  <SortableHeader
+                    label="Min"
+                    sortKey="min"
+                    sort={sort}
+                    onSort={toggleSort}
+                    title="Text columns sort and show the shortest value's length, not the value"
+                  />
+                  <SortableHeader
+                    label="Max"
+                    sortKey="max"
+                    sort={sort}
+                    onSort={toggleSort}
+                    title="Text columns sort and show the longest value's length, not the value"
+                  />
+                  <SortableHeader label="Mean" sortKey="mean" sort={sort} onSort={toggleSort} />
                 </tr>
               </thead>
               <tbody>
-                {detail.columns.map((c) => {
+                {sortedColumns.map((c) => {
                   const flagged = current.some((a) => a.column_name === c.column_name);
                   const nonNull = c.row_count - c.null_count;
                   return (

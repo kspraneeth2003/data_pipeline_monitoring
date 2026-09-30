@@ -106,6 +106,13 @@ class ColumnOut(BaseModel):
     blank_count: int | None
     min_value: str | None
     max_value: str | None
+    # The display strings above are formatted per family (commas, "N chars",
+    # a timestamp) so a column-header sort can't compare them as numbers
+    # correctly. These are the raw values behind them - a number, epoch
+    # seconds for a timestamp, or a length for text - which is what a sort
+    # actually needs.
+    min_numeric: float | None
+    max_numeric: float | None
     mean_numeric: float | None
 
 
@@ -443,7 +450,8 @@ def get_target(target_id: str, db: Session = Depends(get_db)):
                 row_count=c.row_count, null_count=c.null_count,
                 null_ratio=(c.null_count / c.row_count) if c.row_count else None,
                 distinct_count=c.distinct_count, blank_count=c.blank_count,
-                min_value=c.min_value, max_value=c.max_value, mean_numeric=c.mean_numeric,
+                min_value=c.min_value, max_value=c.max_value,
+                min_numeric=c.min_numeric, max_numeric=c.max_numeric, mean_numeric=c.mean_numeric,
             ))
 
     runs = list(reversed(db.scalars(

@@ -108,6 +108,12 @@ def test_first_run_finds_the_all_null_column(env):
     assert [c["column_name"] for c in detail["columns"]] == ["PRODUCT_ID", "WAREHOUSE_ID", "PRICE"]
     assert detail["baseline_runs_needed"] == MIN_HISTORY
 
+    # min_numeric/max_numeric are the raw values behind min_value/max_value's
+    # display strings - what a column-header sort needs, since "1,000" and
+    # "9 chars" can't be compared as numbers once formatted.
+    product_id = detail["columns"][0]
+    assert (product_id["min_numeric"], product_id["max_numeric"]) == (1.0, 1000.0)
+
 
 def test_acknowledged_finding_stays_quiet_on_later_runs(env):
     client, _ = env

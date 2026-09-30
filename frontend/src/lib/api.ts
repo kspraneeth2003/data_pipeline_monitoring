@@ -482,6 +482,11 @@ export type ColumnProfile = {
   blank_count: number | null;
   min_value: string | null;
   max_value: string | null;
+  /** Raw values behind min_value/max_value - a number, epoch seconds for a
+   *  timestamp, or a length for text - so a sort can compare them as numbers
+   *  rather than parsing the already-formatted display string. */
+  min_numeric: number | null;
+  max_numeric: number | null;
   mean_numeric: number | null;
 };
 

@@ -6,8 +6,10 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.checks import repair
+from app.checks.explain import PreviousRun, explain_run
 from app.checks.defects import is_compile_error
 from app.checks.engine import CheckOutcome, run_check
+from app.config import settings
 from app.models import cuid
 from app.monitoring import triage
 from app.rca.graph import generate_rca
@@ -68,6 +70,50 @@ def _resolve_error(db: Session, check: models.Check, outcome: CheckOutcome) -> C
     return rerun
 
 
+def _previous_run(db: Session, check: models.Check, run_id: str) -> PreviousRun | None:
+    previous = (
+        db.query(models.CheckRun)
+        .filter(
+            models.CheckRun.check_id == check.id,
+            models.CheckRun.id != run_id,
+            models.CheckRun.status != models.RunStatus.RUNNING.value,
+        )
+        .order_by(models.CheckRun.started_at.desc())
+        .first()
+    )
+    if previous is None:
+        return None
+    return PreviousRun(
+        id=previous.id, status=previous.status, metrics=previous.metrics, explanation=previous.explanation
+    )
+
+
+def _explain(db: Session, check: models.Check, run: models.CheckRun) -> None:
+    """Attach the "what is off" box. Never allowed to cost the run itself.
+
+    Runs after the run is committed, so the verdict is visible while a slow
+    model is still writing. A failure here rolls back only the explanation;
+    the run stays as committed and the page shows its message instead.
+    """
+    try:
+        run.explanation = explain_run(
+            check_name=check.name,
+            check_type=check.type,
+            description=check.description,
+            config=check.config or {},
+            status=run.status,
+            metrics=run.metrics,
+            message=run.message,
+            previous=_previous_run(db, check, run.id),
+            model_name=settings.agent_model.strip() or None,
+            cooldown_minutes=settings.explain_ai_cooldown_minutes,
+        )
+        db.commit()
+    except Exception:  # noqa: BLE001 - an explanation is an aid, never a gate
+        db.rollback()
+        logger.exception("could not explain run %s of check %s", run.id, check.id)
+
+
 def execute_check(db: Session, check_id: str) -> str:
     check = db.query(models.Check).filter_by(id=check_id).one()
     connector = check.connector
@@ -89,6 +135,7 @@ def execute_check(db: Session, check_id: str) -> str:
     run.finished_at = datetime.now(timezone.utc)
     run.duration_ms = duration_ms
     db.commit()
+    _explain(db, check, run)
 
     if outcome.status == models.RunStatus.INVALID.value:
         # Nothing about the data was learned, so there is nothing to analyse

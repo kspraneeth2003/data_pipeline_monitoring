@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     agent_max_model_calls_cli: int = 6
     agent_cli_timeout_seconds: int = 300
 
+    # How often a check that keeps failing the same way may ask the model to
+    # rewrite its run explanation. Between refreshes the explanation comes
+    # from the template, which carries the new numbers exactly; a freshness
+    # check on a five-minute cron would otherwise call the model every run.
+    # A change of shape - status, or which metrics breached - always asks.
+    explain_ai_cooldown_minutes: float = 60
+
     # How often to check whether any project's DDL has moved. Slower than
     # the monitor sweep because it costs a git fetch and a warehouse query
     # per project, and a pipeline definition changes on the order of days.

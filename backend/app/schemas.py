@@ -168,6 +168,7 @@ class CheckRunOut(BaseModel):
     duration_ms: int | None
     metrics: dict[str, Any] | None
     message: str | None
+    explanation: dict[str, Any] | None = None
     rca: RcaOut | None = None
 
 

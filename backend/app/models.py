@@ -319,6 +319,10 @@ class CheckRun(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     metrics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The "what is off" box - see checks/explain.py. Its own column rather than
+    # a key in `metrics`, because metrics are what the engine measured and this
+    # is prose about them, written afterwards and possibly by a model.
+    explanation: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     check: Mapped["Check"] = relationship(back_populates="runs")
     rca: Mapped["RcaResult | None"] = relationship(back_populates="check_run", cascade="all, delete-orphan", uselist=False)

@@ -27,6 +27,21 @@ function Chevron({ className = "" }: { className?: string }) {
   );
 }
 
+/** Also used, spinning, as the busy indicator on the button it sits in. */
+function ReloadIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true" className={`shrink-0 ${className}`}>
+      <path
+        d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "alert" | "warn" }) {
   const color = tone === "alert" ? "text-red-400" : tone === "warn" ? "text-amber-400" : "text-foreground";
   return (
@@ -139,13 +154,15 @@ function TableRow({
           type="button"
           onClick={act}
           disabled={busy}
-          className={`w-20 py-1 text-xs transition-colors disabled:opacity-50 ${
+          title={target ? "Run this profile now" : "Profile this table now"}
+          aria-label={target ? "Run this profile now" : "Profile this table now"}
+          className={`inline-flex h-7 w-7 items-center justify-center border transition-colors disabled:opacity-50 ${
             target
-              ? "border border-border text-zinc-300 hover:border-accent hover:text-foreground"
-              : "border border-accent-line bg-accent-soft text-accent hover:bg-accent hover:text-accent-foreground"
+              ? "border-border text-zinc-300 hover:border-accent hover:text-foreground"
+              : "border-accent-line bg-accent-soft text-accent hover:bg-accent hover:text-accent-foreground"
           }`}
         >
-          {busy ? "…" : target ? "Run" : "Profile"}
+          <ReloadIcon className={busy ? "animate-spin" : ""} />
         </button>
       </td>
     </tr>
@@ -356,9 +373,37 @@ export function ProjectProfiling() {
     load();
   };
 
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+
+  // Sync is the only thing on this page that reads Snowflake - everything
+  // else reads what the last sync found, which is what keeps the page fast.
+  const sync = async () => {
+    setSyncing(true);
+    setSyncNote(null);
+    try {
+      const result = await profilingApi.syncCatalog(slug);
+      const newTables = result.databases.reduce((n, d) => n + d.new_tables_queued, 0);
+      setSyncNote(
+        newTables > 0
+          ? `Found and started profiling ${newTables} new table${newTables === 1 ? "" : "s"}.`
+          : "Everything is up to date.",
+      );
+    } catch (e) {
+      setSyncNote(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setSyncing(false);
+      refresh();
+    }
+  };
+
   const tables = catalog?.flatMap((d) => d.schemas.flatMap((s) => s.tables)) ?? [];
   const profiled = tables.filter((t) => t.target).length;
   const unreadable = catalog?.filter((d) => !d.readable).length ?? 0;
+  const oldestSync = (catalog ?? []).reduce<string | null>(
+    (oldest, d) => (d.synced_at && (!oldest || d.synced_at < oldest) ? d.synced_at : oldest),
+    null,
+  );
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
@@ -384,7 +429,23 @@ export function ProjectProfiling() {
       )}
 
       <section className="mt-8">
-        <h2 className="mb-2 font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">Tables</h2>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-mono text-xs uppercase tracking-[0.15em] text-zinc-500">Tables</h2>
+          <div className="flex items-center gap-3">
+            {oldestSync && <span className="text-xs text-zinc-500">synced {relativeTime(oldestSync)}</span>}
+            <button
+              type="button"
+              onClick={sync}
+              disabled={syncing}
+              title="Reads each database's table list from Snowflake again, and starts profiling anything new it finds."
+              className="inline-flex items-center gap-1.5 border border-border px-2.5 py-1 text-xs text-foreground transition-colors hover:border-accent disabled:opacity-50"
+            >
+              <ReloadIcon className={syncing ? "animate-spin" : ""} />
+              {syncing ? "Syncing…" : "Sync"}
+            </button>
+          </div>
+        </div>
+        {syncNote && <p className="mb-3 text-xs text-zinc-400">{syncNote}</p>}
         {error && <p className="text-sm text-amber-400">{error}</p>}
         {!catalog && !error && <p className="text-sm text-zinc-500">Reading table lists from the warehouse…</p>}
         {catalog && catalog.length === 0 && (

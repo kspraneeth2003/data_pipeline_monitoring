@@ -528,6 +528,20 @@ export type CatalogDatabase = {
   readable: boolean;
   error: string | null;
   schemas: CatalogSchema[];
+  /** When this database's table list was last read from Snowflake. Null before the first sync. */
+  synced_at: string | null;
+};
+
+export type SyncResult = {
+  database: string;
+  readable: boolean;
+  tables: number;
+  new_tables_queued: number;
+};
+
+export type SyncOut = {
+  synced_at: string;
+  databases: SyncResult[];
 };
 
 export const profilingApi = {
@@ -537,7 +551,12 @@ export const profilingApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  // Fast: reads a cache in Postgres, not Snowflake. Refreshed by syncCatalog,
+  // or once automatically the first time a database's catalog is requested.
   getCatalog: (slug: string) => request<CatalogDatabase[]>(`/api/projects/${slug}/profiling/catalog`),
+  // The live Snowflake read getCatalog no longer does on every call. Tracks
+  // and starts profiling any table found for the first time.
+  syncCatalog: (slug: string) => request<SyncOut>(`/api/projects/${slug}/profiling/sync`, { method: "POST" }),
   discover: (slug: string, databaseId: string, schemaName?: string) =>
     request<DiscoverResult>(`/api/projects/${slug}/profiling/discover`, {
       method: "POST",

@@ -13,13 +13,19 @@ from app.db import get_db
 from app.profiling import detector
 from app.profiling.models import (
     ColumnProfile,
+    DatabaseCatalogSync,
     ProfileAnomaly,
     ProfileRun,
     ProfileRunStatus,
     ProfileTarget,
 )
 from app.profiling.scheduler import queue_now
-from app.profiling.service import explain_warehouse_error, list_catalog, list_tables, run_profile
+from app.profiling.service import (
+    explain_warehouse_error,
+    list_tables,
+    run_profile,
+    sync_database_catalog,
+)
 from app.profiling.sql import parse_object
 
 router = APIRouter(prefix="/api", tags=["profiling"])
@@ -137,6 +143,19 @@ class CatalogDatabase(BaseModel):
     readable: bool
     error: str | None
     schemas: list[CatalogSchema]
+    synced_at: datetime | None
+
+
+class SyncResult(BaseModel):
+    database: str
+    readable: bool
+    tables: int
+    new_tables_queued: int
+
+
+class SyncOut(BaseModel):
+    synced_at: datetime
+    databases: list[SyncResult]
 
 
 # --- Helpers ---------------------------------------------------------------
@@ -229,6 +248,23 @@ def _project_targets(db: Session, project: models.Project) -> list[ProfileTarget
     ).all())
 
 
+def _provision_new_targets(db: Session, database: models.Database, tables: list[dict]) -> int:
+    """Track and run, right now, every table this database holds that nothing here knows about yet.
+
+    This is what makes a first visit self-sufficient: without it, a newly
+    discovered table would sit in the catalog with a "Profile" action nobody
+    has clicked, rather than already having a result on screen.
+    """
+    existing = set(db.scalars(select(ProfileTarget.object).where(ProfileTarget.database_id == database.id)).all())
+    added = [t["object"] for t in tables if t["object"] not in existing]
+    if not added:
+        return 0
+    new_targets = [ProfileTarget(database_id=database.id, object=obj) for obj in added]
+    db.add_all(new_targets)
+    db.flush()
+    return queue_now([t.id for t in new_targets])
+
+
 # --- Routes ----------------------------------------------------------------
 
 
@@ -304,25 +340,68 @@ def run_all(slug: str, payload: DiscoverRequest, db: Session = Depends(get_db)):
     return {"queued": queue_now(ids), "targets": len(ids)}
 
 
+@router.post("/projects/{slug}/profiling/sync", response_model=SyncOut)
+def sync_catalog(slug: str, db: Session = Depends(get_db)):
+    """Refresh every database's table list from Snowflake, right now.
+
+    `GET .../catalog` reads a cache so an ordinary page view costs one
+    Postgres query, not a Snowflake session per database - this is the
+    button that pays for a live read on purpose. Any table found for the
+    first time is tracked and profiled immediately, the same as it would be
+    on a brand new project's very first catalog request; a table this
+    already knew about is left on its own schedule, since re-running
+    everything on every sync would make sync itself the slow thing it
+    replaced.
+    """
+    project = _project_or_404(db, slug)
+    results: list[SyncResult] = []
+    for database in project.databases:
+        tables, error = sync_database_catalog(db, database)
+        queued = _provision_new_targets(db, database, tables) if error is None else 0
+        results.append(SyncResult(database=database.name, readable=error is None, tables=len(tables), new_tables_queued=queued))
+    db.commit()
+    return SyncOut(synced_at=datetime.now(timezone.utc).replace(tzinfo=None), databases=results)
+
+
 @router.get("/projects/{slug}/profiling/catalog", response_model=list[CatalogDatabase])
 def catalog(slug: str, db: Session = Depends(get_db)):
     """Every database, schema and table in the project, and which are profiled.
 
-    Read live from each database's `INFORMATION_SCHEMA` - metadata only, no
-    scan - so the list is what the warehouse holds now rather than what was
-    added here by hand. A database the connection cannot read is still listed,
-    with the reason, rather than silently left out: an absent database reads
-    as "nothing to profile", which is the wrong conclusion.
+    Reads the cached table list (`DatabaseCatalogSync`), not Snowflake -
+    `POST .../profiling/sync` is what refreshes that cache, on request rather
+    than on every page view. The one exception is a database whose catalog
+    has never been synced at all: that read happens here, once, inline, and
+    every table it finds is tracked and profiled immediately - so a project
+    nobody has opened Profiling for yet still ends up with results the first
+    time someone does, rather than a page of "Profile" buttons.
+
+    A database the connection cannot read is still listed, with the reason,
+    rather than silently left out: an absent database reads as "nothing to
+    profile", which is the wrong conclusion.
     """
     project = _project_or_404(db, slug)
+
+    # First-ever view of a database's catalog: sync and provision inline.
+    for database in project.databases:
+        cached = db.scalars(select(DatabaseCatalogSync).where(DatabaseCatalogSync.database_id == database.id)).first()
+        if cached is None:
+            tables, error = sync_database_catalog(db, database)
+            if error is None:
+                _provision_new_targets(db, database, tables)
+    db.commit()
+
     targets = {(t.database_id, t.object): t for t in _project_targets(db, project)}
+    caches = {
+        c.database_id: c
+        for c in db.scalars(
+            select(DatabaseCatalogSync).where(DatabaseCatalogSync.database_id.in_([d.id for d in project.databases]))
+        ).all()
+    }
     out: list[CatalogDatabase] = []
     for database in project.databases:
-        try:
-            tables = list_catalog(database.connector.type, database.connector.config, database.name)
-            error = None
-        except Exception as exc:  # noqa: BLE001 - one unreadable database must not blank the page
-            tables, error = [], explain_warehouse_error(exc, database.name)
+        cached = caches.get(database.id)
+        tables = cached.tables if cached and cached.readable else []
+        error = cached.error if cached else None
         schemas: dict[str, list[CatalogTable]] = {}
         seen: set[str] = set()
         for t in tables:
@@ -343,6 +422,7 @@ def catalog(slug: str, db: Session = Depends(get_db)):
         out.append(CatalogDatabase(
             id=database.id, name=database.name, slug=database.slug, readable=error is None, error=error,
             schemas=[CatalogSchema(name=s, tables=v) for s, v in sorted(schemas.items())],
+            synced_at=cached.synced_at if cached else None,
         ))
     return out
 

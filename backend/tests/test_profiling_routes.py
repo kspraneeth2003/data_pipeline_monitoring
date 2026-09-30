@@ -26,11 +26,14 @@ class FakeWarehouse:
         self.rows = 1000
         self.price_nulls = 0
         self.issued: list[str] = []
+        # A second table `sync` can discover once appended, to prove a plain
+        # catalog view does not pick it up on its own.
+        self.extra_tables: list[dict] = []
 
     def run_query(self, sql: str) -> list[dict]:
         self.issued.append(sql)
         if "INFORMATION_SCHEMA.TABLES" in sql:
-            return [{"TABLE_SCHEMA": "SILVER", "TABLE_NAME": "PRODUCTS"}]
+            return [{"TABLE_SCHEMA": "SILVER", "TABLE_NAME": "PRODUCTS"}, *self.extra_tables]
         if "INFORMATION_SCHEMA.COLUMNS" in sql:
             return [
                 {"COLUMN_NAME": "PRODUCT_ID", "DATA_TYPE": "NUMBER", "ORDINAL_POSITION": 1},
@@ -185,17 +188,66 @@ def test_validation(env):
     assert client.get("/api/projects/p/profiling").json() == []
 
 
-def test_catalog_lists_every_table_and_marks_what_is_profiled(env):
+def test_first_catalog_view_auto_tracks_every_table_it_finds(env):
+    # A project nobody has opened Profiling for yet still ends up with every
+    # table tracked after the very first view - no "Profile" click needed.
     client, _ = env
     [database] = client.get("/api/projects/p/profiling/catalog").json()
     assert database["readable"] is True
+    assert database["synced_at"] is not None
     [schema] = database["schemas"]
     assert schema["name"] == "SILVER"
-    assert [(t["table"], t["target"]) for t in schema["tables"]] == [("PRODUCTS", None)]
+    [table] = schema["tables"]
+    assert table["table"] == "PRODUCTS"
+    assert table["target"] is not None
+    assert table["target"]["object"] == "DPM_SRC_INVENTORY.SILVER.PRODUCTS"
 
-    target_id = _add(client)
+    # A second view sees the same target - it was not created twice.
     [database] = client.get("/api/projects/p/profiling/catalog").json()
-    assert database["schemas"][0]["tables"][0]["target"]["id"] == target_id
+    assert database["schemas"][0]["tables"][0]["target"]["id"] == table["target"]["id"]
+
+
+def test_catalog_reads_the_cache_not_the_warehouse_after_the_first_view(env):
+    client, warehouse = env
+    client.get("/api/projects/p/profiling/catalog")
+    issued_after_first = len(warehouse.issued)
+
+    client.get("/api/projects/p/profiling/catalog")
+    client.get("/api/projects/p/profiling/catalog")
+
+    # No new INFORMATION_SCHEMA.TABLES round trip - the warehouse was not
+    # asked again, which is the whole point of caching the catalog.
+    assert len(warehouse.issued) == issued_after_first
+    assert sum("INFORMATION_SCHEMA.TABLES" in q for q in warehouse.issued) == 1
+
+
+def test_sync_refreshes_the_cache_and_tracks_a_newly_appeared_table(env):
+    client, warehouse = env
+    client.get("/api/projects/p/profiling/catalog")  # discovers and tracks PRODUCTS
+
+    warehouse.extra_tables = [{"TABLE_SCHEMA": "GOLD", "TABLE_NAME": "STOCK_SUMMARY"}]
+
+    # The cache is stale until a sync - the new table is not visible yet.
+    [database] = client.get("/api/projects/p/profiling/catalog").json()
+    assert {s["name"] for s in database["schemas"]} == {"SILVER"}
+
+    result = client.post("/api/projects/p/profiling/sync").json()
+    assert result["databases"] == [
+        {"database": "DPM_SRC_INVENTORY", "readable": True, "tables": 2, "new_tables_queued": 0}
+    ]
+
+    [database] = client.get("/api/projects/p/profiling/catalog").json()
+    names = {s["name"] for s in database["schemas"]}
+    assert names == {"SILVER", "GOLD"}
+    [gold] = [s for s in database["schemas"] if s["name"] == "GOLD"]
+    assert gold["tables"][0]["target"] is not None  # tracked without a click, same as the first table
+
+
+def test_sync_reports_but_does_not_requeue_an_already_tracked_table(env):
+    client, _ = env
+    client.get("/api/projects/p/profiling/catalog")
+    result = client.post("/api/projects/p/profiling/sync").json()
+    assert result["databases"][0]["new_tables_queued"] == 0  # nothing new to queue
 
 
 def test_discover_can_be_limited_to_one_schema(env):

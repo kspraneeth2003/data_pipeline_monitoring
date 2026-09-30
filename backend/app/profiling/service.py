@@ -17,6 +17,7 @@ from app.profiling import detector
 from app.profiling.models import (
     AnomalyKind,
     ColumnProfile,
+    DatabaseCatalogSync,
     ProfileAnomaly,
     ProfileRun,
     ProfileRunStatus,
@@ -265,3 +266,32 @@ def explain_warehouse_error(exc: Exception, database: str) -> str:
             "on its schemas and SELECT on its tables)."
         )
     return text.split("\n")[-1][:500]
+
+
+def sync_database_catalog(db: Session, database) -> tuple[list[dict], str | None]:
+    """Read one database's table list live from Snowflake and cache it.
+
+    Returns `(tables, error)` in the same shape `list_catalog` returns, so a
+    caller can treat a fresh read and a cached one identically. The cache row
+    is written but not committed - callers batch several databases into one
+    commit (or roll one back without half-writing the others).
+    """
+    try:
+        tables = list_catalog(database.connector.type, database.connector.config, database.name)
+        error = None
+    except Exception as exc:  # noqa: BLE001 - one unreadable database must not fail the sync
+        tables, error = [], explain_warehouse_error(exc, database.name)
+
+    cached = db.scalars(select(DatabaseCatalogSync).where(DatabaseCatalogSync.database_id == database.id)).first()
+    if cached is None:
+        cached = DatabaseCatalogSync(database_id=database.id)
+        db.add(cached)
+    cached.readable = error is None
+    cached.error = error
+    # JSONB needs JSON-safe values; `last_altered` arrives as a datetime.
+    cached.tables = [
+        {**t, "last_altered": t["last_altered"].isoformat() if t["last_altered"] else None} for t in tables
+    ]
+    cached.synced_at = _utcnow()
+    db.flush()
+    return tables, error

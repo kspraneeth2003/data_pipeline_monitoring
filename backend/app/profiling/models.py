@@ -8,7 +8,8 @@ Alembic and `create_all` see them like any other table.
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -166,3 +167,34 @@ class ProfileAnomaly(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     run: Mapped[ProfileRun] = relationship(back_populates="anomalies")
+
+
+class DatabaseCatalogSync(Base):
+    """One database's table list, as last read from `INFORMATION_SCHEMA`.
+
+    The catalog page used to read this live, from Snowflake, on every visit -
+    one session per database, every time the page mounted. Cheap in warehouse
+    cost (metadata only, no table scan) but not in latency, and every tab
+    switch paid for it again. This is that read, cached: refreshed by an
+    explicit sync (`POST .../profiling/sync`), and once automatically - the
+    first time a database's catalog is asked for and no row exists yet here,
+    so a brand new project is discovered and profiled without anyone opening
+    every table by hand.
+    """
+
+    __tablename__ = "profile_catalog_syncs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=cuid)
+    database_id: Mapped[str] = mapped_column(
+        ForeignKey("databases.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    readable: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # [{"object", "schema", "table", "row_count", "last_altered"}, ...] - the
+    # flat shape `service.list_catalog` already returns, stored as-is so the
+    # router's grouping logic works the same whether it is reading this cache
+    # or a live result.
+    tables: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    synced_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    database: Mapped[Database] = relationship()

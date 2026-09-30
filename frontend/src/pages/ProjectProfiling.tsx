@@ -1,9 +1,9 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { AnomalyList } from "../components/AnomalyList";
 import { Breadcrumbs } from "../components/Breadcrumbs";
-import { profilingApi, type CatalogDatabase, type CatalogTable, type ProfileAnomaly } from "../lib/api";
+import { profilingApi, type CatalogDatabase, type CatalogSchema, type CatalogTable, type ProfileAnomaly } from "../lib/api";
 import { relativeTime } from "../lib/time";
 
 /**
@@ -11,10 +11,21 @@ import { relativeTime } from "../lib/time";
  *
  * The table list is the warehouse's own catalog - every database, schema and
  * table, read live from INFORMATION_SCHEMA - so nothing has to be typed in.
- * One row per table, one action per row. A profile does not pass or fail, so
- * its state is a dot and a time rather than a PASSED badge; what it found is
- * the Findings column.
+ * The hierarchy is real (database contains schemas contains tables), so it is
+ * rendered as one: a database section holding its schemas, each holding a
+ * table of its own tables - not one flat table with a database name sharing
+ * a row with a "Table" column, which reads as data rather than as a heading.
+ * Both levels default open, since collapsing something nobody asked to
+ * collapse yet just hides the thing the page is for.
  */
+
+function Chevron({ className = "" }: { className?: string }) {
+  return (
+    <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true" className={`shrink-0 transition-transform ${className}`}>
+      <path d="M2 1l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "alert" | "warn" }) {
   const color = tone === "alert" ? "text-red-400" : tone === "warn" ? "text-amber-400" : "text-foreground";
@@ -72,7 +83,6 @@ function TableRow({
 }) {
   const [busy, setBusy] = useState(false);
   const target = table.target;
-  const [schema, name] = [table.object.split(".")[1], table.table];
 
   // Adding a table runs it straight away, so its first profile - and any
   // finding - appears without waiting for the hourly schedule.
@@ -89,22 +99,21 @@ function TableRow({
     }
   };
 
-  const label = (
-    <span className="truncate font-mono text-sm" title={table.object}>
-      <span className="text-zinc-500">{schema}.</span>
-      <span className={target ? "text-foreground" : "text-zinc-400"}>{name}</span>
-    </span>
-  );
-
   return (
     <tr className="border-t border-border transition-colors hover:bg-white/[0.02]">
       <td className="max-w-0 px-4 py-2.5">
         {target ? (
-          <Link to={`/projects/${slug}/profiling/${target.id}`} className="block truncate hover:[&_span]:text-accent">
-            {label}
+          <Link
+            to={`/projects/${slug}/profiling/${target.id}`}
+            className="block truncate font-mono text-sm text-foreground hover:text-accent"
+            title={table.object}
+          >
+            {table.table}
           </Link>
         ) : (
-          <div className="truncate">{label}</div>
+          <div className="truncate font-mono text-sm text-zinc-400" title={table.object}>
+            {table.table}
+          </div>
         )}
       </td>
       <td className="whitespace-nowrap px-4 py-2.5 text-right font-mono text-sm text-zinc-400">
@@ -143,7 +152,79 @@ function TableRow({
   );
 }
 
-function DatabaseRows({
+function SchemaSection({
+  schema,
+  slug,
+  database,
+  onChanged,
+}: {
+  schema: CatalogSchema;
+  slug: string;
+  database: CatalogDatabase;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const remaining = schema.tables.filter((t) => !t.target).length;
+
+  const profileSchema = async (e: React.MouseEvent) => {
+    e.preventDefault(); // inside <summary> - a plain click would also toggle the disclosure
+    setBusy(true);
+    try {
+      await profilingApi.discover(slug, database.id, schema.name);
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  return (
+    <details open className="group/schema border-t border-border first:border-t-0">
+      <summary className="flex list-none items-center justify-between gap-4 px-4 py-2 [&::-webkit-details-marker]:hidden">
+        <span className="flex min-w-0 cursor-pointer items-center gap-2">
+          <Chevron className="text-zinc-500 group-open/schema:rotate-90" />
+          <span className="truncate font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-400">
+            {schema.name} · {schema.tables.length}
+          </span>
+        </span>
+        {remaining > 0 && schema.tables.length > 1 && (
+          <button
+            type="button"
+            onClick={profileSchema}
+            disabled={busy}
+            className="shrink-0 whitespace-nowrap text-[11px] text-accent hover:underline disabled:opacity-50"
+          >
+            {busy ? "Adding…" : `Profile schema (${remaining})`}
+          </button>
+        )}
+      </summary>
+      <table className="w-full table-fixed text-left">
+        <colgroup>
+          <col />
+          <col className="w-28" />
+          <col className="w-56" />
+          <col className="w-28" />
+          <col className="w-28" />
+        </colgroup>
+        <thead>
+          <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
+            <th className="px-4 py-2 font-normal">Table</th>
+            <th className="px-4 py-2 text-right font-normal">Rows</th>
+            <th className="px-4 py-2 font-normal">Last profile</th>
+            <th className="px-4 py-2 font-normal">Findings</th>
+            <th className="px-4 py-2" />
+          </tr>
+        </thead>
+        <tbody>
+          {schema.tables.map((table) => (
+            <TableRow key={table.object} table={table} slug={slug} databaseId={database.id} onChanged={onChanged} />
+          ))}
+        </tbody>
+      </table>
+    </details>
+  );
+}
+
+function DatabaseSection({
   database,
   slug,
   onChanged,
@@ -159,7 +240,8 @@ function DatabaseRows({
 
   // Both start profiling in the background right away; the page refreshes
   // itself until the runs land.
-  const profileAll = async () => {
+  const profileAll = async (e: React.MouseEvent) => {
+    e.preventDefault();
     setBusy(true);
     try {
       if (remaining > 0) await profilingApi.discover(slug, database.id);
@@ -170,51 +252,62 @@ function DatabaseRows({
     }
   };
 
+  const summary = (
+    <summary className="flex list-none items-center justify-between gap-4 bg-surface-raised px-4 py-2.5 [&::-webkit-details-marker]:hidden">
+      <span className="flex min-w-0 cursor-pointer items-center gap-2">
+        {database.readable && <Chevron className="text-zinc-400 group-open/db:rotate-90" />}
+        <span className="truncate font-mono text-sm font-medium text-foreground">{database.name}</span>
+        <span className="whitespace-nowrap text-xs text-zinc-500">
+          {database.readable ? `${profiled} of ${tables.length} profiled` : "not readable"}
+        </span>
+      </span>
+      {database.readable && tables.length > 0 && (
+        <button
+          type="button"
+          onClick={profileAll}
+          disabled={busy}
+          title={
+            remaining > 0
+              ? "Profiles every remaining table now, then hourly. Each profile is one scan of its table."
+              : "Re-profiles every table in this database now."
+          }
+          className="shrink-0 whitespace-nowrap text-xs text-accent hover:underline disabled:opacity-50"
+        >
+          {busy ? "Starting…" : remaining > 0 ? `Profile all ${remaining}` : `Run all ${profiled}`}
+        </button>
+      )}
+    </summary>
+  );
+
+  // An unreadable database has nothing to expand - the reason is the whole
+  // story, so it is shown flat rather than as a disclosure with no content.
+  if (!database.readable) {
+    return (
+      <div className="border-t border-border first:border-t-0">
+        <div className="flex items-center justify-between gap-4 bg-surface-raised px-4 py-2.5">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-mono text-sm font-medium text-foreground">{database.name}</span>
+            <span className="whitespace-nowrap text-xs text-zinc-500">not readable</span>
+          </span>
+        </div>
+        <p className="px-4 py-2.5 text-xs text-zinc-500" title={database.error ?? undefined}>
+          This connection can't read {database.name} - it was removed, or its role hasn't been granted access.
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <Fragment>
-      <tr className="border-t border-border bg-surface-raised">
-        <td colSpan={5} className="px-4 py-2">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex min-w-0 items-baseline gap-3">
-              <span className="truncate font-mono text-xs font-medium tracking-wide text-foreground">{database.name}</span>
-              <span className="whitespace-nowrap text-xs text-zinc-500">
-                {database.readable ? `${tables.length - remaining} of ${tables.length} profiled` : "not readable"}
-              </span>
-            </div>
-            {database.readable && tables.length > 0 && (
-              <button
-                type="button"
-                onClick={profileAll}
-                disabled={busy}
-                title={
-                  remaining > 0
-                    ? "Profiles every remaining table now, then hourly. Each profile is one scan of its table."
-                    : "Re-profiles every table in this database now."
-                }
-                className="whitespace-nowrap text-xs text-accent hover:underline disabled:opacity-50"
-              >
-                {busy ? "Starting…" : remaining > 0 ? `Profile all ${remaining}` : `Run all ${profiled}`}
-              </button>
-            )}
-          </div>
-        </td>
-      </tr>
-      {!database.readable && (
-        <tr className="border-t border-border">
-          <td colSpan={5} className="px-4 py-2.5 text-xs text-zinc-500" title={database.error ?? undefined}>
-            This connection can't read {database.name} - it was removed, or its role hasn't been granted access.
-          </td>
-        </tr>
+    <details open className="group/db border-t border-border first:border-t-0">
+      {summary}
+      {tables.length === 0 ? (
+        <p className="px-4 py-2.5 text-xs text-zinc-500">No tables.</p>
+      ) : (
+        database.schemas.map((schema) => (
+          <SchemaSection key={schema.name} schema={schema} slug={slug} database={database} onChanged={onChanged} />
+        ))
       )}
-      {database.readable && tables.length === 0 && (
-        <tr className="border-t border-border">
-          <td colSpan={5} className="px-4 py-2.5 text-xs text-zinc-500">No tables.</td>
-        </tr>
-      )}
-      {tables.map((table) => (
-        <TableRow key={table.object} table={table} slug={slug} databaseId={database.id} onChanged={onChanged} />
-      ))}
-    </Fragment>
+    </details>
   );
 }
 
@@ -305,29 +398,9 @@ export function ProjectProfiling() {
         )}
         {catalog && catalog.length > 0 && (
           <div className="border border-border bg-surface">
-            <table className="w-full table-fixed text-left">
-              <colgroup>
-                <col />
-                <col className="w-28" />
-                <col className="w-56" />
-                <col className="w-28" />
-                <col className="w-28" />
-              </colgroup>
-              <thead>
-                <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
-                  <th className="px-4 py-2.5 font-normal">Table</th>
-                  <th className="px-4 py-2.5 text-right font-normal">Rows</th>
-                  <th className="px-4 py-2.5 font-normal">Last profile</th>
-                  <th className="px-4 py-2.5 font-normal">Findings</th>
-                  <th className="px-4 py-2.5" />
-                </tr>
-              </thead>
-              <tbody>
-                {catalog.map((database) => (
-                  <DatabaseRows key={database.id} database={database} slug={slug} onChanged={refresh} />
-                ))}
-              </tbody>
-            </table>
+            {catalog.map((database) => (
+              <DatabaseSection key={database.id} database={database} slug={slug} onChanged={refresh} />
+            ))}
           </div>
         )}
       </section>

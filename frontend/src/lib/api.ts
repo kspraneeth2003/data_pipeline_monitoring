@@ -516,13 +516,18 @@ export type CatalogTable = {
   target: ProfileTarget | null;
 };
 
+export type CatalogSchema = {
+  name: string;
+  tables: CatalogTable[];
+};
+
 export type CatalogDatabase = {
   id: string;
   name: string;
   slug: string;
   readable: boolean;
   error: string | null;
-  schemas: { name: string; tables: CatalogTable[] }[];
+  schemas: CatalogSchema[];
 };
 
 export const profilingApi = {

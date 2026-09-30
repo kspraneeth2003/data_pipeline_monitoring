@@ -298,7 +298,11 @@ def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> Chec
             message=(
                 f"Not monitored: every row of {config.bronzeObject} is newer than the "
                 f"{_fmt_minutes(config.lagMinutes)}-minute settling window, so nothing could be "
-                f"compared. Its {config.bronzeLoadedAtColumn} is probably rewritten on every run "
+                f"compared. Its "
+                # In query mode the column is DPM's own projection; the reader
+                # knows the table, not that alias.
+                f"{'settle timestamp' if config.bronzeQuery else config.bronzeLoadedAtColumn} "
+                f"is probably rewritten on every run "
                 f"(a table rebuilt with TRUNCATE + INSERT), which leaves no per-row settle time."
             ),
         )

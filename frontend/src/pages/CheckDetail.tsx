@@ -9,6 +9,7 @@ import { EnabledToggle } from "../components/EnabledToggle";
 import { DeleteButton } from "../components/DeleteButton";
 import { CheckLogic, CheckSql } from "../components/CheckExplanation";
 import { PinButton } from "../components/PinButton";
+import { RunExplanation } from "../components/RunExplanation";
 import { stageLabel } from "../lib/stages";
 
 export function CheckDetail() {
@@ -137,6 +138,10 @@ export function CheckDetail() {
 
         {tab === "overview" && (
           <>
+            <LatestRun
+              run={check.runs[0]}
+              onShowRuns={() => setSearchParams({ tab: "runs" }, { replace: true })}
+            />
             <CheckLogic rationale={check.rationale} />
             <section className="mb-6 rounded-xl border border-border bg-surface p-4 shadow-sm">
               <h2 className="mb-2 text-sm font-semibold text-zinc-700 dark:text-zinc-300">Config</h2>
@@ -185,7 +190,11 @@ export function CheckDetail() {
                     {run.duration_ms !== null && <span className="text-xs text-zinc-400">{run.duration_ms}ms</span>}
                   </div>
                 </div>
-                {run.message && <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">{run.message}</p>}
+                {run.explanation ? (
+                  <RunExplanation run={run} />
+                ) : (
+                  run.message && <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">{run.message}</p>
+                )}
                 <RunRepairNote run={run} />
                 {run.status === "INVALID" ? (
                   // The raw compiler error is for whoever maintains DPM, not
@@ -197,9 +206,18 @@ export function CheckDetail() {
                     </pre>
                   </details>
                 ) : run.metrics !== null && Object.keys(run.metrics).length > 0 && (
-                  <pre className="mt-2 overflow-x-auto rounded-lg bg-zinc-50 p-2 text-xs text-zinc-600 dark:bg-black/30 dark:text-zinc-400">
-                    {JSON.stringify(run.metrics, null, 2)}
-                  </pre>
+                  // Folded once there is an explanation to read instead; the
+                  // engine's own message goes with it, for whoever wants the
+                  // exact wording the verdict was based on.
+                  <details className="mt-2 text-xs text-zinc-500" open={!run.explanation}>
+                    <summary className="cursor-pointer hover:text-foreground">Metrics</summary>
+                    {run.explanation && run.message && (
+                      <p className="mt-1 font-mono text-zinc-500">{run.message}</p>
+                    )}
+                    <pre className="mt-1 overflow-x-auto rounded-lg bg-zinc-50 p-2 text-zinc-600 dark:bg-black/30 dark:text-zinc-400">
+                      {JSON.stringify(run.metrics, null, 2)}
+                    </pre>
+                  </details>
                 )}
 
                 {run.rca && (
@@ -361,6 +379,33 @@ function VersionHistory({
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * The latest run, at the top of the overview - the first thing anyone opening
+ * a check wants to know is what it last found, not how it is configured.
+ */
+function LatestRun({ run, onShowRuns }: { run: CheckRun | undefined; onShowRuns: () => void }) {
+  if (!run) return null;
+  return (
+    <section className="mb-6 rounded-xl border border-border bg-surface p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">Latest run</h2>
+          <StatusBadge status={run.status} />
+          <span className="text-xs text-zinc-500">{formatDateTime(run.started_at)}</span>
+        </div>
+        <button type="button" onClick={onShowRuns} className="text-xs text-zinc-500 transition-colors hover:text-accent">
+          All runs →
+        </button>
+      </div>
+      {run.explanation ? (
+        <RunExplanation run={run} />
+      ) : (
+        run.message && <p className="mt-2 text-sm text-zinc-700 dark:text-zinc-300">{run.message}</p>
+      )}
+    </section>
   );
 }
 

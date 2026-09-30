@@ -56,7 +56,23 @@ export type CheckRun = {
   duration_ms: number | null;
   metrics: Record<string, unknown> | null;
   message: string | null;
+  /** The "what is off" box. Null on runs from before it existed. */
+  explanation: RunExplanation | null;
   rca: RcaResult | null;
+};
+
+/** Mirrors the dict built by backend/app/checks/explain.py:explain_run. */
+export type RunExplanation = {
+  text: string;
+  /** "ai": a model draft that passed the number and verdict checks. "template": built from the metrics. */
+  source: "ai" | "template";
+  model: string | null;
+  /** When the model was last asked in this streak, even if its draft was rejected. */
+  askedAt: string | null;
+  /** Set when the metrics were identical to an earlier run and its text was kept. */
+  reusedFromRunId: string | null;
+  /** Why a model draft was discarded in favour of the template. */
+  rejected: string | null;
 };
 
 export type ProjectHealth = {

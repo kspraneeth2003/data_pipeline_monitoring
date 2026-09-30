@@ -1,4 +1,19 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+# The metrics a check measures that a person may demote from "asserted" to
+# "reported". Named after the metric rather than its threshold, because what
+# the reader decides is "EXTRA_IN_SILVER is information, not a verdict" - the
+# old RDS parity sign-offs made exactly that call in their Assert column.
+ParityMetric = Literal["missingInSilver", "extraInSilver", "duplicateKeys", "valueMismatches"]
+Scd2Metric = Literal[
+    "keysWithNoCurrent",
+    "keysWithManyCurrent",
+    "overlappingVersions",
+    "gappedVersions",
+    "invalidWindows",
+]
 
 
 class RowCountConfig(BaseModel):
@@ -110,6 +125,13 @@ class BronzeToSilverParityConfig(BaseModel):
     maxDuplicateKeys: int = Field(default=0, ge=0)
     maxValueMismatches: int = Field(default=0, ge=0)
 
+    # Metrics that are measured and shown but never fail the run. The common
+    # case is extras against a point-in-time export: the target keeps loading
+    # after the export is cut, so extras only grow, and a large tolerance to
+    # absorb them goes stale the next day while hiding real ones. Reporting is
+    # the honest statement; a breach still appears on the run, marked as such.
+    reportOnly: list[ParityMetric] = Field(default_factory=list)
+
     sampleLimit: int = Field(default=5, ge=0, le=100)
 
 
@@ -147,6 +169,10 @@ class Scd2IntegrityConfig(BaseModel):
     maxOverlappingVersions: int = Field(default=0, ge=0)
     maxGappedVersions: int = Field(default=0, ge=0)
     maxInvalidWindows: int = Field(default=0, ge=0)
+
+    # As on parity. The current-flag / open-ended disagreement has no
+    # threshold and cannot be demoted: it is a contradiction within one row.
+    reportOnly: list[Scd2Metric] = Field(default_factory=list)
 
     sampleLimit: int = Field(default=5, ge=0, le=100)
 

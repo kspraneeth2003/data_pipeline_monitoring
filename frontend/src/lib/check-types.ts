@@ -1,4 +1,6 @@
-export type FieldKind = "text" | "number" | "json";
+export type FieldKind = "text" | "number" | "json" | "multi";
+
+export type FieldOption = { value: string; label: string };
 
 export type FieldDescriptor = {
   key: string;
@@ -6,6 +8,8 @@ export type FieldDescriptor = {
   kind: FieldKind;
   placeholder?: string;
   optional?: boolean;
+  /** For `multi`: the choices, stored in config as an array of their values. */
+  options?: FieldOption[];
 };
 
 export type CheckTypeMeta = {
@@ -165,6 +169,19 @@ export const CHECK_TYPES: CheckTypeMeta[] = [
       { key: "maxMissingInSilver", label: "Max source keys missing from the target", kind: "number", optional: true },
       { key: "maxExtraInSilver", label: "Max target keys with no source origin", kind: "number", optional: true },
       { key: "maxValueMismatches", label: "Max value mismatches", kind: "number", optional: true },
+      {
+        key: "reportOnly",
+        label:
+          "Report only - measured and shown on every run, but never fails it. Use for extras against a point-in-time export, where the target keeps loading after the cut",
+        kind: "multi",
+        optional: true,
+        options: [
+          { value: "missingInSilver", label: "Missing in target" },
+          { value: "extraInSilver", label: "Extra in target" },
+          { value: "duplicateKeys", label: "Duplicate keys" },
+          { value: "valueMismatches", label: "Value mismatches" },
+        ],
+      },
     ],
   },
   {
@@ -214,6 +231,20 @@ export const CHECK_TYPES: CheckTypeMeta[] = [
       { key: "maxOverlappingVersions", label: "Max overlapping versions", kind: "number", optional: true },
       { key: "maxGappedVersions", label: "Max gaps between versions", kind: "number", optional: true },
       { key: "maxInvalidWindows", label: "Max malformed windows (valid-from at or after valid-to)", kind: "number", optional: true },
+      {
+        key: "reportOnly",
+        label:
+          "Report only - measured and shown, but never fails the run. For a known, temporary population such as a backfill in progress",
+        kind: "multi",
+        optional: true,
+        options: [
+          { value: "keysWithManyCurrent", label: "Keys with several current rows" },
+          { value: "keysWithNoCurrent", label: "Keys with no current row" },
+          { value: "overlappingVersions", label: "Overlapping versions" },
+          { value: "gappedVersions", label: "Gaps between versions" },
+          { value: "invalidWindows", label: "Malformed windows" },
+        ],
+      },
     ],
   },
 ];

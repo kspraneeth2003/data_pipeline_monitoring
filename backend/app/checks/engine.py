@@ -199,6 +199,37 @@ def _as_int(value) -> int:
     return int(value) if value is not None else 0
 
 
+@dataclass
+class _Breach:
+    metric: str
+    value: int
+    threshold: int
+    text: str
+
+
+def _partition(breaches: list[_Breach], report_only: list[str]) -> tuple[list[str], dict]:
+    """Split threshold breaches into those that fail the run and those reported.
+
+    A report-only breach is still recorded under `metrics["reported"]` with its
+    value and threshold, so the run says what it saw - demoting a metric changes
+    the verdict, never the observation.
+    """
+    demoted = set(report_only)
+    asserted = [b.text for b in breaches if b.metric not in demoted]
+    reported = {
+        b.metric: {"value": b.value, "threshold": b.threshold, "text": b.text}
+        for b in breaches
+        if b.metric in demoted
+    }
+    return asserted, reported
+
+
+def _reported_suffix(reported: dict) -> str:
+    if not reported:
+        return ""
+    return " (reported only: " + "; ".join(r["text"] for r in reported.values()) + ")"
+
+
 def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> CheckOutcome:
     config = BronzeToSilverParityConfig.model_validate(raw_config)
     row = connector.run_query(build_parity_sql(config))[0]
@@ -252,39 +283,61 @@ def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> Chec
 
     # Ordered worst-first: a dedup failure is the headline finding, since it is
     # the property this check exists to prove.
-    failures: list[str] = []
+    breaches: list[_Breach] = []
     if duplicate_keys > config.maxDuplicateKeys:
-        failures.append(
+        breaches.append(_Breach(
+            "duplicateKeys", duplicate_keys, config.maxDuplicateKeys,
             f"deduplication failed - {duplicate_keys} key(s) appear more than once in silver "
-            f"({surplus_rows} surplus row(s))"
-        )
+            f"({surplus_rows} surplus row(s))",
+        ))
     if missing > config.maxMissingInSilver:
-        failures.append(f"{missing} settled bronze key(s) never reached silver")
+        breaches.append(_Breach(
+            "missingInSilver", missing, config.maxMissingInSilver,
+            f"{missing} settled bronze key(s) never reached silver",
+        ))
     if extra > config.maxExtraInSilver:
-        failures.append(f"{extra} silver key(s) have no bronze origin")
+        breaches.append(_Breach(
+            "extraInSilver", extra, config.maxExtraInSilver,
+            f"{extra} silver key(s) have no bronze origin",
+        ))
     if value_mismatches > config.maxValueMismatches:
         detail = (
             " on " + ", ".join(f"{col} ({n})" for col, n in sorted(mismatch_by_column.items()))
             if mismatch_by_column
             else ""
         )
-        failures.append(f"{value_mismatches} key(s) disagree on value{detail}")
+        breaches.append(_Breach(
+            "valueMismatches", value_mismatches, config.maxValueMismatches,
+            f"{value_mismatches} key(s) disagree on value{detail}",
+        ))
+
+    failures, reported = _partition(breaches, config.reportOnly)
+    metrics["reportOnly"] = list(config.reportOnly)
+    metrics["reported"] = reported
+    prefix = f"{config.bronzeObject} -> {config.silverObject}: "
 
     if failures:
         return CheckOutcome(
             status="FAILED",
             metrics=metrics,
-            message=(
-                f"{config.bronzeObject} -> {config.silverObject}: " + "; ".join(failures)
-            ),
+            message=prefix + "; ".join(failures) + _reported_suffix(reported),
+        )
+
+    if reported:
+        # The 1:1 sentence below would be false here - something *was* off,
+        # it is just not what this check asserts.
+        return CheckOutcome(
+            status="PASSED",
+            metrics=metrics,
+            message=prefix + "no asserted metric breached" + _reported_suffix(reported),
         )
 
     return CheckOutcome(
         status="PASSED",
         metrics=metrics,
         message=(
-            f"{config.bronzeObject} -> {config.silverObject}: "
-            f"{metrics['bronzeDistinctKeys']} settled bronze key(s) map 1:1 onto "
+            prefix
+            + f"{metrics['bronzeDistinctKeys']} settled bronze key(s) map 1:1 onto "
             f"{metrics['silverRows']} silver row(s); no duplicates, no loss"
             + (f" ({silver_ahead} still settling)" if silver_ahead else "")
             + (f", {len(config.valueColumns)} value column(s) agree" if config.valueColumns else "")
@@ -333,36 +386,57 @@ def _run_scd2_integrity(connector: Connector, raw_config: dict) -> CheckOutcome:
     # doubles every measure joined through the dimension, which is the failure
     # that reaches a report unnoticed; a malformed window is usually visible the
     # moment anyone looks at the row.
-    failures: list[str] = []
+    breaches: list[_Breach] = []
     if many_current > config.maxKeysWithManyCurrent:
-        failures.append(
+        breaches.append(_Breach(
+            "keysWithManyCurrent", many_current, config.maxKeysWithManyCurrent,
             f"{many_current} key(s) have more than one current row - any join through this "
-            f"dimension fans out and doubles its measures"
-        )
+            f"dimension fans out and doubles its measures",
+        ))
     if no_current > config.maxKeysWithNoCurrent:
-        failures.append(
-            f"{no_current} key(s) have no current row, so they resolve to nothing in an as-of join"
-        )
+        breaches.append(_Breach(
+            "keysWithNoCurrent", no_current, config.maxKeysWithNoCurrent,
+            f"{no_current} key(s) have no current row, so they resolve to nothing in an as-of join",
+        ))
     if overlapping > config.maxOverlappingVersions:
-        failures.append(f"{overlapping} version(s) overlap the next version of the same key")
+        breaches.append(_Breach(
+            "overlappingVersions", overlapping, config.maxOverlappingVersions,
+            f"{overlapping} version(s) overlap the next version of the same key",
+        ))
     if gapped > config.maxGappedVersions:
-        failures.append(
+        breaches.append(_Breach(
+            "gappedVersions", gapped, config.maxGappedVersions,
             f"{gapped} gap(s) between consecutive versions - the key existed but no version covers "
-            f"the interval"
-        )
+            f"the interval",
+        ))
     if invalid > config.maxInvalidWindows:
-        failures.append(f"{invalid} row(s) have VALID_FROM at or after VALID_TO")
+        breaches.append(_Breach(
+            "invalidWindows", invalid, config.maxInvalidWindows,
+            f"{invalid} row(s) have VALID_FROM at or after VALID_TO",
+        ))
+
+    failures, reported = _partition(breaches, config.reportOnly)
     if current_not_open or open_not_current:
+        # Always asserted - see Scd2IntegrityConfig.reportOnly.
         failures.append(
             f"the current flag and the open-ended marker disagree on "
             f"{current_not_open + open_not_current} row(s)"
         )
+    metrics["reportOnly"] = list(config.reportOnly)
+    metrics["reported"] = reported
 
     if failures:
         return CheckOutcome(
             status="FAILED",
             metrics=metrics,
-            message=f"{config.object}: " + "; ".join(failures),
+            message=f"{config.object}: " + "; ".join(failures) + _reported_suffix(reported),
+        )
+
+    if reported:
+        return CheckOutcome(
+            status="PASSED",
+            metrics=metrics,
+            message=f"{config.object}: no asserted metric breached" + _reported_suffix(reported),
         )
 
     return CheckOutcome(

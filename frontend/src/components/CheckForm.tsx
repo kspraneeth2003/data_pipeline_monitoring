@@ -21,7 +21,20 @@ type InitialCheck = {
 function configFieldToString(value: unknown, kind: string): string {
   if (value === undefined || value === null) return "";
   if (kind === "json") return JSON.stringify(value, null, 2);
+  // Held as JSON text like every other structured field, so the form's one
+  // string-per-field state does not need a second shape.
+  if (kind === "multi") return Array.isArray(value) && value.length > 0 ? JSON.stringify(value) : "";
   return String(value);
+}
+
+function selectedValues(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 export function CheckForm({
@@ -90,6 +103,8 @@ export function CheckForm({
         }
         if (field.kind === "number") {
           config[field.key] = Number(raw);
+        } else if (field.kind === "multi") {
+          config[field.key] = selectedValues(raw);
         } else if (field.kind === "json") {
           try {
             config[field.key] = JSON.parse(raw);
@@ -220,7 +235,36 @@ export function CheckForm({
 
       <fieldset className="space-y-3 border-t border-border pt-4">
         <legend className="mb-1 text-sm font-semibold text-zinc-700 dark:text-zinc-300">{meta.label} config</legend>
-        {meta.fields.map((field) => (
+        {meta.fields.map((field) =>
+          field.kind === "multi" ? (
+            <div key={field.key} className="flex flex-col gap-1 text-sm">
+              <span className="font-medium text-zinc-700 dark:text-zinc-300">
+                {field.label}
+                {field.optional && <span className="ml-1 text-xs text-zinc-400">(optional)</span>}
+              </span>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {(field.options ?? []).map((option) => {
+                  const selected = selectedValues(fieldValues[field.key]);
+                  const checked = selected.includes(option.value);
+                  return (
+                    <label key={option.value} className="flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const next = checked
+                            ? selected.filter((v) => v !== option.value)
+                            : [...selected, option.value];
+                          setField(field.key, next.length > 0 ? JSON.stringify(next) : "");
+                        }}
+                      />
+                      <span className="text-zinc-700 dark:text-zinc-300">{option.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
           <label key={field.key} className="flex flex-col gap-1 text-sm">
             <span className="font-medium text-zinc-700 dark:text-zinc-300">
               {field.label}
@@ -245,7 +289,8 @@ export function CheckForm({
               />
             )}
           </label>
-        ))}
+          ),
+        )}
       </fieldset>
 
       {isEdit && (

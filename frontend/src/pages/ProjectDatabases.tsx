@@ -46,7 +46,16 @@ export function ProjectDatabases() {
   // Unhealthy first, same rule as the projects list one level up.
   const databases = [...project.databases].sort((a, b) => {
     const rank = (d: typeof a) =>
-      d.health.erroring > 0 ? 0 : d.health.failing > 0 ? 1 : d.health.total_checks === 0 ? 3 : 2;
+      d.health.erroring > 0
+            ? 0
+            : d.health.failing > 0
+              ? 1
+              : // Above passing: not known to be healthy.
+                d.health.unreachable > 0
+                ? 2
+                : d.health.total_checks === 0
+                  ? 4
+                  : 3;
     return rank(a) - rank(b) || a.name.localeCompare(b.name);
   });
 

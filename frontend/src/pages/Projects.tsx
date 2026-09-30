@@ -17,7 +17,16 @@ export function Projects() {
   const ordered = projects
     ? [...projects].sort((a, b) => {
         const rank = (p: Project) =>
-          p.health.erroring > 0 ? 0 : p.health.failing > 0 ? 1 : p.health.total_checks === 0 ? 3 : 2;
+          p.health.erroring > 0
+            ? 0
+            : p.health.failing > 0
+              ? 1
+              : // Above passing: not known to be healthy.
+                p.health.unreachable > 0
+                ? 2
+                : p.health.total_checks === 0
+                  ? 4
+                  : 3;
         return rank(a) - rank(b) || a.name.localeCompare(b.name);
       })
     : null;

@@ -49,8 +49,11 @@ export type CheckRun = {
   /**
    * INVALID: the check's own SQL was wrong, so the run says nothing about the
    * data. Shown as "not monitored", never as a failure.
+   *
+   * UNREACHABLE: credentials, grants, network or warehouse stopped the check
+   * after one retry. Also says nothing about the data; shown as "couldn't run".
    */
-  status: "RUNNING" | "PASSED" | "FAILED" | "ERROR" | "INVALID";
+  status: "RUNNING" | "PASSED" | "FAILED" | "ERROR" | "INVALID" | "UNREACHABLE";
   started_at: string;
   finished_at: string | null;
   duration_ms: number | null;
@@ -82,11 +85,13 @@ export type ProjectHealth = {
   erroring: number;
   /** Checks whose own SQL is broken. Not a health state - just not watched. */
   not_monitored: number;
+  /** Checks whose last run could not reach the warehouse. Ranked above passing. */
+  unreachable: number;
   never_run: number;
   disabled: number;
   open_incidents: number;
   last_run_at: string | null;
-  status: "PASSED" | "FAILED" | "ERROR" | "NONE";
+  status: "PASSED" | "UNREACHABLE" | "FAILED" | "ERROR" | "NONE";
 };
 
 export type Database = {

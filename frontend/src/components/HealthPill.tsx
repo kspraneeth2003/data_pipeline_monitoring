@@ -4,6 +4,7 @@ const STATUS_STYLES: Record<string, string> = {
   PASSED: "border-emerald-500/40 bg-emerald-950 text-emerald-400",
   FAILED: "border-red-500/40 bg-red-950 text-red-400",
   ERROR: "border-amber-500/40 bg-amber-950 text-amber-400",
+  UNREACHABLE: "border-dashed border-blue-500/50 bg-zinc-900 text-blue-400",
   NONE: "border-zinc-700 bg-zinc-900 text-zinc-400",
 };
 
@@ -11,6 +12,7 @@ const DOT_STYLES: Record<string, string> = {
   PASSED: "bg-emerald-500",
   FAILED: "bg-red-500",
   ERROR: "bg-amber-500",
+  UNREACHABLE: "bg-blue-500/70",
   NONE: "bg-zinc-400",
 };
 
@@ -27,7 +29,9 @@ export function HealthPill({ health }: { health: ProjectHealth }) {
         ? `${health.erroring} erroring`
         : health.failing > 0
           ? `${health.failing} failing`
-          : health.passing > 0
+          : health.unreachable > 0
+            ? `${health.unreachable} couldn't run`
+            : health.passing > 0
             ? "All passing"
             : "Not yet run";
 

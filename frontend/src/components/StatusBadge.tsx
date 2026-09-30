@@ -10,10 +10,15 @@ const STYLES: Record<string, { pill: string; dot: string }> = {
   // Grey and dashed, deliberately unlike every alarm colour: the check is
   // broken, the data is not, and nothing here should read as a failure.
   INVALID: { pill: "border-dashed border-zinc-600 bg-transparent text-zinc-400", dot: "bg-zinc-500" },
+  // Dashed like INVALID - nothing was learned about the data - but not grey,
+  // because this is not our bug: someone has a credential, grant or warehouse
+  // to fix. Blue rather than an alarm colour, since the data is not known bad.
+  UNREACHABLE: { pill: "border-dashed border-blue-500/50 bg-transparent text-blue-400", dot: "bg-blue-500/70" },
 };
 
 const LABELS: Record<string, string> = {
   INVALID: "Not monitored",
+  UNREACHABLE: "Couldn't run",
 };
 
 export function StatusBadge({ status }: { status: string }) {

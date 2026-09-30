@@ -218,13 +218,20 @@ export function ProfileTable() {
               <thead>
                 <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
                   <th className="px-4 py-2.5 font-normal">Column</th>
-                  <th className="px-4 py-2.5 font-normal">Null</th>
-                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Trend</th>
+                  <th className="px-4 py-2.5 font-normal" title="% of rows where the value is NULL - the field has nothing stored">
+                    Null
+                  </th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Null trend</th>
                   <th className="px-4 py-2.5 font-normal">Distinct</th>
-                  <th className="px-4 py-2.5 font-normal">Blank</th>
+                  <th
+                    className="px-4 py-2.5 font-normal"
+                    title="% of non-null rows that are an empty or whitespace-only string - a value that passes NOT NULL but carries nothing"
+                  >
+                    Blank
+                  </th>
                   <th className="px-4 py-2.5 font-normal">Range</th>
                   <th className="px-4 py-2.5 font-normal">Mean</th>
-                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Trend</th>
+                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Mean trend</th>
                 </tr>
               </thead>
               <tbody>
@@ -292,8 +299,9 @@ export function ProfileTable() {
           </div>
         )}
         <p className="mt-2 text-xs text-zinc-500">
-          Text columns are profiled by length only - no value from a text column is ever stored. Distinct counts are
-          approximate (±2%).
+          Null means the field has nothing stored; blank means it holds an empty or whitespace-only string, which
+          passes a NOT NULL constraint but carries nothing. Text columns are profiled by length only - no value from
+          a text column is ever stored. Distinct counts are approximate (±2%).
         </p>
       </section>
 

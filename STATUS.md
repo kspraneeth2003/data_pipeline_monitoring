@@ -276,6 +276,35 @@ Verified live with `claude-cli` on six failing checks: five drafts accepted
 and matching the metrics, one citing a number that exists nowhere replaced
 by the template.
 
+### A check that cannot reach its data is not a pipeline error (`UNREACHABLE`)
+
+ERROR used to cover everything that stopped a check: a dropped column, our
+own bad SQL, an expired password, a network blip. Our SQL now becomes
+INVALID (above). This separates the rest, because an ERROR got RCA - which
+blamed the pipeline's latest commit for a credential - and opened a HIGH
+incident per check, so one expired password paged once per check behind it.
+
+- `defects.unreachable_kind` classifies an errored run as `access` (bad
+  credentials, role, grants, warehouse, account identifier) or `transient`
+  (timeouts, resets, expired session, DNS). The patterns were checked
+  against the live account with a deliberately wrong password, warehouse,
+  role and account, in memory only.
+- `runner._reach` retries a transient error once after
+  `TRANSIENT_RETRY_SECONDS`, and records a recovered retry on the run so a
+  connection that always needs one stays visible. What still cannot connect
+  is `UNREACHABLE` ("Couldn't run"): no RCA, no data incident, no effect on
+  an existing one. A retry that connects and then hits a data or SQL error
+  goes on to the usual defect assessment.
+- After `UNREACHABLE_INCIDENT_AFTER_RUNS` (3) in a row, the connection gets
+  one ACCESS incident (new `incidents.kind`, migration `a8d3e5f0b7c2`),
+  shared by every check on it, with no blamed owner. Any run on that
+  connection that reaches the data clears it at once.
+- Health ranks it between FAILED and PASSED: nothing is known to be wrong,
+  and nothing is known to be right.
+
+ERROR is now left meaning a table or column the check reads is gone, or an
+error nothing here can explain - reported, not hidden.
+
 ### Parser fixes driven by the FCC reference repo
 
 Each of these was a case of deriving *nothing* while looking like it had derived
@@ -839,10 +868,14 @@ npm run dev
   `VARCHAR(16777216)` - the same type. `_run_schema_drift` compares by
   prefix; it needs the alias table (STRING/TEXT -> VARCHAR, INT -> NUMBER,
   ...) before any DDL-derived contract can be trusted
-- **A `--reload` dev server can keep serving old code on Windows.** Found
-  when the running backend (started 2026-09-28) did not pick up the
-  explanation commits. Restart it after pulling anything that touches
-  `models.py` or `schemas.py`
+- **`--reload` never reloads a backend started without a console on
+  Windows.** uvicorn 0.52 restarts its worker by sending it a Ctrl+C console
+  event (`supervisors/basereload.py`) and then joins it; a server started in
+  the background (by an agent, a service, `start /b`) has no console, the
+  event never arrives, and the reloader waits forever while the old worker -
+  and its scheduler - keeps running old code. That is how the scheduler ran
+  two-day-old code and reported our own SQL as ERROR. From a normal
+  terminal reload works; anywhere else, restart the process by hand
 
 - **Neither agent has been run against a live model.** Everything below the
   model - prompts, tools, schemas, budgets, and every branch of the applying

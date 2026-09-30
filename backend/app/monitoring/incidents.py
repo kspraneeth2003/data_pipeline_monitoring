@@ -21,6 +21,7 @@ from app.models import (
     Incident,
     IncidentEvent,
     IncidentEventKind,
+    IncidentKind,
     IncidentSeverity,
     IncidentState,
     cuid,
@@ -59,6 +60,10 @@ def active_incident_for(db: Session, check_id: str) -> Incident | None:
         select(Incident)
         .where(
             Incident.check_id == check_id,
+            # A check's run history continues its DATA incident only. An
+            # ACCESS incident is about the connection and has its own
+            # lifecycle (triage.on_unreachable_run / on_reachable_run).
+            Incident.kind == IncidentKind.DATA.value,
             Incident.state.in_([IncidentState.OPEN.value, IncidentState.WARNING.value]),
         )
         .order_by(Incident.opened_at)
@@ -143,11 +148,13 @@ def open_incident(
     severity: str = IncidentSeverity.MEDIUM.value,
     triage_source: str = "rule",
     correlate: bool = True,
+    kind: str = IncidentKind.DATA.value,
 ) -> Incident:
     now = utcnow()
     incident = Incident(
         id=cuid(),
         check_id=check.id,
+        kind=kind,
         state=IncidentState.OPEN.value,
         severity=severity,
         title=title,

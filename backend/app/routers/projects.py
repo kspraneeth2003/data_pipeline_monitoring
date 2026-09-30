@@ -62,7 +62,7 @@ def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.Projec
     # INVALID is counted apart and never feeds the worst-state rollup below: a
     # check whose own SQL is broken says nothing about the data, and reading it
     # as a failure would put our fault on the user's pipeline.
-    counts = {"PASSED": 0, "FAILED": 0, "ERROR": 0, "INVALID": 0}
+    counts = {"PASSED": 0, "FAILED": 0, "ERROR": 0, "INVALID": 0, "UNREACHABLE": 0}
     never_run = disabled = 0
     last_run_at = None
 
@@ -100,6 +100,10 @@ def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.Projec
         status = "ERROR"
     elif counts["FAILED"]:
         status = "FAILED"
+    elif counts["UNREACHABLE"]:
+        # Above PASSED: a project where some checks could not run is not known
+        # to be healthy, and showing it green would claim coverage it lacks.
+        status = "UNREACHABLE"
     elif counts["PASSED"]:
         status = "PASSED"
     else:
@@ -111,6 +115,7 @@ def _health_of_checks(db: Session, checks: list[models.Check]) -> schemas.Projec
         failing=counts["FAILED"],
         erroring=counts["ERROR"],
         not_monitored=counts["INVALID"],
+        unreachable=counts["UNREACHABLE"],
         never_run=never_run,
         disabled=disabled,
         open_incidents=open_incidents,

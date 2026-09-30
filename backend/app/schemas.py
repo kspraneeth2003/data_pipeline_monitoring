@@ -255,11 +255,15 @@ class ProjectHealth(BaseModel):
     # Checks whose own SQL is broken (last run INVALID). Not a health state -
     # these tables are simply not being watched until the check is repaired.
     not_monitored: int = 0
+    # Checks whose last run could not reach the warehouse (UNREACHABLE). Ranked
+    # between failing and passing: nothing is known to be wrong, but nothing is
+    # known to be right either, and green would claim the latter.
+    unreachable: int = 0
     never_run: int
     disabled: int
     open_incidents: int
     last_run_at: datetime | None
-    status: str  # PASSED | FAILED | ERROR | NONE
+    status: str  # PASSED | UNREACHABLE | FAILED | ERROR | NONE
 
 
 class ProjectOut(BaseModel):

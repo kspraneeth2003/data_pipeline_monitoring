@@ -54,6 +54,16 @@ class Settings(BaseSettings):
     # A change of shape - status, or which metrics breached - always asks.
     explain_ai_cooldown_minutes: float = 60
 
+    # A transient warehouse error (timeout, reset connection, expired session)
+    # is retried once after this pause before the run is reported as
+    # UNREACHABLE. One retry, not a loop: a check that needs three attempts is
+    # telling you something about the connection.
+    transient_retry_seconds: float = 10
+    # Consecutive UNREACHABLE runs of a check before its connection gets an
+    # ACCESS incident. One incident per connection, not per check: an expired
+    # password would otherwise file an issue for every check behind it.
+    unreachable_incident_after_runs: int = 3
+
     # How often to check whether any project's DDL has moved. Slower than
     # the monitor sweep because it costs a git fetch and a warehouse query
     # per project, and a pipeline definition changes on the order of days.

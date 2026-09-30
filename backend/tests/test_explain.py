@@ -97,7 +97,13 @@ def test_template_does_not_call_an_empty_comparison_clean():
 
 
 def test_template_for_invalid_and_error_says_nothing_about_the_data():
-    assert "says nothing about the data" in template_text("NULL_RATE", "INVALID", {}, "x", {}, None)
+    # INVALID keeps the defect assessment's own reason; generic only without one.
+    assert template_text("NULL_RATE", "INVALID", {}, "Not monitored: key from a join.", {}, None) == (
+        "Not monitored: key from a join."
+    )
+    assert "says nothing about the data" in template_text("NULL_RATE", "INVALID", {}, None, {}, None)
+    unreachable = template_text("NULL_RATE", "UNREACHABLE", {}, "Couldn't run: bad password.", {}, None)
+    assert unreachable.startswith("Couldn't run: bad password.") and "last result stands" in unreachable
     error = template_text("NULL_RATE", "ERROR", {}, "Object 'X' does not exist\nmore", {}, None)
     assert "could not run" in error and "does not exist" in error
 

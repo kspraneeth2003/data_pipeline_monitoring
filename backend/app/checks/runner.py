@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.checks import repair
 from app.checks.explain import PreviousRun, explain_run
-from app.checks.defects import is_compile_error
+from app.checks.defects import is_compile_error, unreachable_kind
 from app.checks.engine import CheckOutcome, run_check
 from app.config import settings
 from app.models import cuid
@@ -32,6 +32,44 @@ def _run(check: models.Check) -> CheckOutcome:
 
 def _invalid(summary: str, diagnostics: dict) -> CheckOutcome:
     return CheckOutcome(status=models.RunStatus.INVALID.value, metrics={"diagnostics": diagnostics}, message=summary)
+
+
+_UNREACHABLE_SUMMARY = {
+    "access": "Couldn't run: DPM could not use this connection - check its credentials, "
+    "role grants and warehouse.",
+    "transient": "Couldn't run: the warehouse could not be reached, and a retry failed too.",
+}
+
+
+def _reach(check: models.Check, outcome: CheckOutcome) -> CheckOutcome:
+    """Retry a transient error once; report what still cannot reach the data.
+
+    Returns the outcome unchanged when the error is about the data or the SQL,
+    so `_resolve_error` still decides between the pipeline and our defect.
+    """
+    kind = unreachable_kind(outcome.message)
+    if kind is None:
+        return outcome
+    retried = kind == "transient"
+    if retried:
+        first_error = outcome.message
+        time.sleep(settings.transient_retry_seconds)
+        outcome = _run(check)
+        if outcome.status != models.RunStatus.ERROR.value:
+            # Recovered. Kept on the run so a connection that needs a retry
+            # every time is visible, rather than hidden by its own success.
+            outcome.metrics = {**outcome.metrics, "retried": {"afterError": (first_error or "")[:500]}}
+            return outcome
+        # The retry can fail differently: an access error behind a timeout, or
+        # - now that it connected - an error about the data itself.
+        kind = unreachable_kind(outcome.message)
+        if kind is None:
+            return outcome
+    return CheckOutcome(
+        status=models.RunStatus.UNREACHABLE.value,
+        metrics={"unreachable": {"kind": kind, "error": (outcome.message or "")[:2000], "retried": retried}},
+        message=_UNREACHABLE_SUMMARY[kind],
+    )
 
 
 def _resolve_error(db: Session, check: models.Check, outcome: CheckOutcome) -> CheckOutcome:
@@ -126,6 +164,8 @@ def execute_check(db: Session, check_id: str) -> str:
     started = time.monotonic()
     outcome = _run(check)
     if outcome.status == models.RunStatus.ERROR.value:
+        outcome = _reach(check, outcome)
+    if outcome.status == models.RunStatus.ERROR.value:
         outcome = _resolve_error(db, check, outcome)
     duration_ms = int((time.monotonic() - started) * 1000)
 
@@ -144,6 +184,16 @@ def execute_check(db: Session, check_id: str) -> str:
         # pipeline's.
         triage.on_invalid_run(db, check, run)
         return run.id
+
+    if outcome.status == models.RunStatus.UNREACHABLE.value:
+        # Also nothing learned about the data - no RCA, which would only blame
+        # the pipeline's latest commit for a credential or a network. Triage
+        # decides whether the connection has been dark long enough to say so.
+        triage.on_unreachable_run(db, check, run)
+        return run.id
+
+    # The check reached its data, so whatever kept its connection dark is over.
+    triage.on_reachable_run(db, check, run)
 
     # Both branches hand off to triage, which owns the incident. Nothing here
     # decides whether to file a ticket any more: a run is an observation, and

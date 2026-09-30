@@ -27,7 +27,7 @@ never the record of what happened.
 import logging
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import models
@@ -35,6 +35,7 @@ from app.config import settings
 from app.models import (
     Incident,
     IncidentEventKind,
+    IncidentKind,
     IncidentSeverity,
     IncidentState,
     RunStatus,
@@ -58,10 +59,11 @@ UNTOUCHED_STATUSES = {"to do", "todo", "open", "backlog", "new", "selected for d
 
 
 def severity_for(run_status: str, failure_count: int) -> str:
-    """An ERROR outranks a FAILED: a check that could not run at all means the
-    warehouse or the credentials are wrong, which blocks every other answer.
-    Sustained failure escalates on its own - something broken for ten runs is
-    not the same news as something broken once."""
+    """An ERROR outranks a FAILED: an ERROR now means a table or column the
+    check reads is gone, which blocks every other answer about that table.
+    (Unreachable credentials and networks are UNREACHABLE, handled below, and
+    never reach here.) Sustained failure escalates on its own - something
+    broken for ten runs is not the same news as something broken once."""
     if run_status == RunStatus.ERROR.value:
         return IncidentSeverity.HIGH.value
     if failure_count >= 10:
@@ -133,6 +135,7 @@ def recently_cleared_incident(db: Session, check_id: str) -> Incident | None:
         select(Incident)
         .where(
             Incident.check_id == check_id,
+            Incident.kind == IncidentKind.DATA.value,
             Incident.state == IncidentState.CLEARED.value,
             Incident.cleared_at.is_not(None),
             Incident.cleared_at >= cutoff,
@@ -253,6 +256,127 @@ def on_invalid_run(db: Session, check: models.Check, run: models.CheckRun) -> In
         incident.ticket_moved_at = lifecycle.utcnow()
     db.commit()
     return incident
+
+
+def _active_access_incident(db: Session, connector_id: str) -> Incident | None:
+    return db.scalars(
+        select(Incident)
+        .join(models.Check, models.Check.id == Incident.check_id)
+        .where(
+            models.Check.connector_id == connector_id,
+            Incident.kind == IncidentKind.ACCESS.value,
+            Incident.state.in_([IncidentState.OPEN.value, IncidentState.WARNING.value]),
+        )
+        .order_by(Incident.opened_at)
+    ).first()
+
+
+def on_unreachable_run(db: Session, check: models.Check, run: models.CheckRun) -> Incident | None:
+    """The check could not reach its data. Say so once per connection, and late.
+
+    One unreachable run is a blip the retry did not cover. A streak of
+    `unreachable_incident_after_runs` is a connection that is down, and that is
+    worth one ACCESS incident - anchored to whichever check noticed first, and
+    shared by every other check on the same connection, so an expired password
+    files one issue rather than one per check behind it.
+
+    A DATA incident this check already has is left alone: not being able to
+    look is neither a new failure nor a recovery.
+    """
+    threshold = max(1, settings.unreachable_incident_after_runs)
+    recent = db.scalars(
+        select(models.CheckRun.status)
+        .where(models.CheckRun.check_id == check.id, models.CheckRun.status != RunStatus.RUNNING.value)
+        .order_by(models.CheckRun.started_at.desc())
+        .limit(threshold)
+    ).all()
+    if len(recent) < threshold or any(status != RunStatus.UNREACHABLE.value for status in recent):
+        return None
+
+    existing = _active_access_incident(db, check.connector_id)
+    if existing is not None:
+        existing.last_seen_at = lifecycle.utcnow()
+        existing.last_run_id = run.id
+        existing.failure_count += 1
+        db.commit()
+        return existing
+
+    connector = check.connector
+    dark = _dark_check_count(db, check.connector_id)
+    error = ((run.metrics or {}).get("unreachable") or {}).get("error") or run.message or ""
+    first_line = error.strip().splitlines()[0][:300] if error.strip() else "no error text"
+    summary = (
+        f"DPM has not been able to run checks on the connection \"{connector.name}\" for "
+        f"{threshold} consecutive runs; {dark} check(s) on it are currently not running. "
+        f"Nothing about the data behind this connection has been checked since, so the "
+        f"results shown for those checks are stale. Last error: {first_line}"
+    )
+    incident = lifecycle.open_incident(
+        db,
+        check,
+        run,
+        title=f"Cannot run checks on connection {connector.name}",
+        summary=summary,
+        # Every check behind the connection is blind, which is worse than any
+        # one of them failing.
+        severity=IncidentSeverity.HIGH.value,
+        correlate=False,
+        kind=IncidentKind.ACCESS.value,
+    )
+    file_issue(
+        incident,
+        TicketContent(
+            title=incident.title,
+            description=summary + f"\n\nDPM incident {incident.id} - it clears itself when a check runs again.",
+            priority=incident.severity,
+            # Nobody in the pipeline's git history owns a credential or a
+            # grant, so there is no blame to assign.
+            assignee=None,
+            labels=("dpm", "access"),
+        ),
+    )
+    db.commit()
+    return incident
+
+
+def on_reachable_run(db: Session, check: models.Check, run: models.CheckRun) -> Incident | None:
+    """A check on this connection ran, so the connection is back. Clear at once.
+
+    No two-pass threshold, unlike a DATA incident: a run that reached the
+    warehouse is proof the connection works, not a noisy signal.
+    """
+    incident = _active_access_incident(db, check.connector_id)
+    if incident is None:
+        return None
+    body = f'Connection is working again: "{check.name}" ran at {run.started_at:%Y-%m-%d %H:%M} UTC.'
+    lifecycle.clear_incident(db, incident, body, check_run_id=run.id)
+    backend = ticket_backend()
+    if backend is not None and incident.ticket_key:
+        backend.transition(incident, done=True, comment=body)
+        incident.ticket_status = settings.jira_done_status
+        incident.ticket_moved_at = lifecycle.utcnow()
+    db.commit()
+    return incident
+
+
+def _dark_check_count(db: Session, connector_id: str) -> int:
+    """Checks on this connection whose latest run could not reach the data."""
+    latest = (
+        select(models.CheckRun.check_id, func.max(models.CheckRun.started_at).label("at"))
+        .join(models.Check, models.Check.id == models.CheckRun.check_id)
+        .where(models.Check.connector_id == connector_id)
+        .group_by(models.CheckRun.check_id)
+        .subquery()
+    )
+    return db.scalar(
+        select(func.count())
+        .select_from(models.CheckRun)
+        .join(
+            latest,
+            (models.CheckRun.check_id == latest.c.check_id) & (models.CheckRun.started_at == latest.c.at),
+        )
+        .where(models.CheckRun.status == RunStatus.UNREACHABLE.value)
+    ) or 0
 
 
 def sync_ticket_state(db: Session, incidents: list[Incident]) -> int:
@@ -389,7 +513,13 @@ def reopen_closed_but_failing(db: Session) -> list[Incident]:
     """
     reopened: list[Incident] = []
     candidates = db.scalars(
-        select(Incident).where(Incident.state == IncidentState.CLEARED.value)
+        select(Incident).where(
+            Incident.state == IncidentState.CLEARED.value,
+            # An ACCESS incident reopens itself through on_unreachable_run when
+            # the connection is still dark; reading "still failing" off one
+            # check's latest run would be the wrong question.
+            Incident.kind == IncidentKind.DATA.value,
+        )
     ).all()
 
     for incident in candidates:
@@ -411,6 +541,9 @@ def reopen_closed_but_failing(db: Session) -> list[Incident]:
             # An invalid check is not failing - it is not observing at all -
             # and it is the very thing that cleared this incident.
             RunStatus.INVALID.value,
+            # Nor is one that could not reach its data: that says nothing
+            # about whether the closure was right.
+            RunStatus.UNREACHABLE.value,
         ):
             continue
 

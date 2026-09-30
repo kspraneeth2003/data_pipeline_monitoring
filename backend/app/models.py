@@ -61,6 +61,15 @@ class RunStatus(str, enum.Enum):
     # gets no RCA, and the UI shows the check as not monitored. See
     # checks/defects.py for how it is told apart from a pipeline ERROR.
     INVALID = "INVALID"
+    # The check could not reach its data at all - credentials, permissions,
+    # network, a warehouse that will not resume - after one retry of anything
+    # that looked transient. Like INVALID it says nothing about the data, so it
+    # gets no RCA and opens no data incident. Unlike INVALID it is nobody's bug
+    # in the SQL, and a whole connection going dark is worth one incident: see
+    # triage.on_unreachable_run. ERROR is left meaning what is news about the
+    # pipeline - a table or column the check reads is gone - or an error
+    # nothing here can explain, which is reported rather than hidden.
+    UNREACHABLE = "UNREACHABLE"
 
 
 class IncidentSeverity(str, enum.Enum):
@@ -87,6 +96,20 @@ class IncidentState(str, enum.Enum):
     # Flapping, or known-noisy. Deliberately quiet, and says so out loud -
     # silence that is never explained is indistinguishable from a bug.
     SUPPRESSED = "SUPPRESSED"
+
+
+class IncidentKind(str, enum.Enum):
+    """What an incident is about, which decides what may open, clear or
+    continue it.
+
+    DATA is a check finding something wrong with the pipeline. ACCESS is DPM
+    being unable to run checks on a connection at all. They never share a
+    lifecycle: a failing run must not continue an access incident, and a
+    connection coming back must not clear a data one.
+    """
+
+    DATA = "DATA"
+    ACCESS = "ACCESS"
 
 
 class IncidentEventKind(str, enum.Enum):
@@ -495,6 +518,7 @@ class Incident(Base):
     check_id: Mapped[str] = mapped_column(ForeignKey("checks.id", ondelete="CASCADE"), index=True)
 
     state: Mapped[str] = mapped_column(String, default=IncidentState.OPEN.value, index=True)
+    kind: Mapped[str] = mapped_column(String, default=IncidentKind.DATA.value, server_default="DATA")
     severity: Mapped[str] = mapped_column(String, default=IncidentSeverity.MEDIUM.value)
     title: Mapped[str] = mapped_column(Text)
     # The agent's current understanding, rewritten as the incident develops.

@@ -231,7 +231,55 @@ def is_compile_error(message: str | None) -> bool:
 def is_missing_object(message: str | None) -> bool:
     """A table or view the check reads does not exist (or is not visible)."""
     text = (message or "").lower()
-    return "does not exist or not authorized" in text
+    return "does not exist or not authorized" in text and not _matches(text, _ACCESS)
+
+
+# Errors that stop a check from reaching its data at all. Neither kind says
+# anything about the pipeline, so neither may reach RCA - which would blame the
+# pipeline's latest commit for an expired password - or a data incident.
+#
+# Transient: worth one retry, since the next attempt usually works.
+_TRANSIENT = (
+    "timed out", "timeout", "connection reset", "connection aborted", "connection refused",
+    "could not connect", "failed to connect", "250001", "250003", "temporarily unavailable",
+    "service unavailable", "bad gateway", "gateway timeout", "max retries exceeded",
+    "authentication token has expired", "390114", "session no longer exists", "390111",
+    "remote end closed connection", "getaddrinfo failed", "name or service not known",
+    "nodename nor servname", "temporary failure in name resolution",
+)
+# Access: retrying will not help; someone has to change a credential, a grant
+# or the warehouse. "Does not exist or not authorized" belongs here only when it
+# is about the connection itself (role, warehouse, user) - about a table it is
+# the pipeline moving, which `is_missing_object` reports.
+_ACCESS = (
+    "incorrect username or password", "390100", "jwt token is invalid", "390144",
+    "temporarily locked", "390102", "user is disabled", "390101", "insufficient privileges",
+    "no active warehouse selected", "resource monitor", "cannot be resumed", "is suspended",
+    "specified in the connect string", "ip address", "is not allowed to access snowflake",
+    "could not decrypt",
+    # A wrong account identifier: the login endpoint itself is not there.
+    "290404", "/session/v1/login-request",
+)
+
+
+def _matches(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def unreachable_kind(message: str | None) -> str | None:
+    """"access", "transient", or None when the error is about the data or the SQL.
+
+    Access is checked first: an expired-credential message can also mention a
+    failed connection, and retrying a wrong password only locks the account.
+    """
+    text = (message or "").lower()
+    if not text or is_compile_error(text):
+        return None
+    if _matches(text, _ACCESS):
+        return "access"
+    if _matches(text, _TRANSIENT):
+        return "transient"
+    return None
 
 
 @dataclass

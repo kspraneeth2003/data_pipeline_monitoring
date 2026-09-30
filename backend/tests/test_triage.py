@@ -400,3 +400,76 @@ class TestJiraSync:
         incident.ticket_moved_at = lifecycle.utcnow() - timedelta(hours=1)
         db.commit()
         assert triage.escalate_stale(db) == []
+
+
+def unreachable(db, check, message="Couldn't run: bad password."):
+    return triage.on_unreachable_run(db, check, make_run(db, check, "UNREACHABLE", message))
+
+
+@pytest.fixture
+def sibling(db, check):
+    """A second check on the same connection."""
+    other = Check(
+        id=cuid(), name="Customers parity", type="ROW_COUNT", schedule="* * * * *",
+        database_id=check.database_id, connector_id=check.connector_id, config={},
+    )
+    db.add(other)
+    db.commit()
+    return other
+
+
+class TestUnreachableConnection:
+    def test_a_short_streak_opens_nothing(self, db, check, jira):
+        assert unreachable(db, check) is None
+        assert unreachable(db, check) is None
+        assert db.query(Incident).count() == 0
+        assert jira.created == []
+
+    def test_a_full_streak_opens_one_access_incident(self, db, check, jira):
+        for _ in range(3):
+            incident = unreachable(db, check)
+        assert incident.kind == models.IncidentKind.ACCESS.value
+        assert incident.severity == IncidentSeverity.HIGH.value
+        assert "connection c" in incident.title
+        assert jira.created == [incident.title]
+
+    def test_a_streak_broken_by_a_real_run_does_not_count(self, db, check):
+        unreachable(db, check)
+        unreachable(db, check)
+        make_run(db, check, "PASSED", None)
+        assert unreachable(db, check) is None
+
+    def test_every_check_on_the_connection_shares_one_incident(self, db, check, sibling, jira):
+        for _ in range(3):
+            first = unreachable(db, check)
+        for _ in range(3):
+            second = unreachable(db, sibling)
+        assert second.id == first.id
+        assert db.query(Incident).count() == 1
+        assert len(jira.created) == 1
+
+    def test_any_run_that_reaches_the_data_clears_it_at_once(self, db, check, sibling, jira):
+        for _ in range(3):
+            incident = unreachable(db, check)
+        # The sibling getting through is proof enough; no two-pass threshold.
+        triage.on_reachable_run(db, sibling, make_run(db, sibling, "FAILED", "37 keys missing"))
+        db.refresh(incident)
+        assert incident.state == IncidentState.CLEARED.value
+        assert jira.transitions == [True]
+
+    def test_it_never_touches_a_data_incident(self, db, check):
+        data = fail(db, check, "37 keys missing")
+        for _ in range(3):
+            unreachable(db, check)
+        db.refresh(data)
+        assert data.state == IncidentState.OPEN.value
+        assert data.failure_count == 1
+        # And a failure afterwards continues the data incident, not the access one.
+        assert fail(db, check, "37 keys missing").id == data.id
+
+    def test_a_closed_data_incident_is_not_reopened_by_an_unreachable_run(self, db, check):
+        data = fail(db, check)
+        lifecycle.clear_incident(db, data, "closed by hand")
+        db.commit()
+        make_run(db, check, "UNREACHABLE", "Couldn't run")
+        assert triage.reopen_closed_but_failing(db) == []

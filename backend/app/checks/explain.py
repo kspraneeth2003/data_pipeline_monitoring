@@ -25,7 +25,7 @@ mechanical:
    discarded - it could only agree with the badge or contradict it.
 
 The model is also asked only when it can add something: a failure, or a pass
-with a report-only breach. A clean pass, an ERROR or an INVALID run get the
+with a report-only breach. A clean pass, an ERROR, INVALID or UNREACHABLE run get the
 template. A check failing the same way on every run keeps its text while the
 metrics are unchanged, and otherwise gets the template - which carries the new
 numbers exactly - until `explain_ai_cooldown_minutes` has passed. A change of
@@ -267,9 +267,15 @@ def template_text(
     """The explanation from the metrics alone. Always available, never wrong."""
     m = metrics or {}
     if status == "INVALID":
+        # The defect assessment wrote a specific reason ("its key comes from a
+        # joined table"); a generic line would throw it away.
+        return (message or "").strip() or (
+            "Not monitored: this check's own SQL is broken, so this run says nothing about the data."
+        )
+    if status == "UNREACHABLE":
         return (
-            "Not monitored: this check's own SQL is broken, so this run says nothing about the data. "
-            "DPM repairs it where it can and otherwise files the fix for review."
+            (message or "Couldn't run.").strip()
+            + " Nothing about the data was checked; the last result stands until it can run again."
         )
     if status == "ERROR":
         detail = (message or "").strip().splitlines()[0][:200] if message else ""

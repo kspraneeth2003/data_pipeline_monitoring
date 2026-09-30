@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 from app import models, schemas
 from app.checks.config_schemas import CONFIG_SCHEMAS_BY_TYPE
 from app.checks.runner import execute_check
+from app.checks.drilldown import try_build_drilldowns
 from app.checks.sql import try_build_statements
 from app.checks.stage import stage_for
 from app.checks.versions import record_version
@@ -54,6 +55,9 @@ def _with_statements(check: models.Check | None) -> models.Check | None:
     statements, error = try_build_statements(check.type, check.config)
     check.statements = statements
     check.statements_error = error
+    # Same rule as the statements: built on read from the config, so the query
+    # a reader pastes into Snowflake cannot drift from what the check counts.
+    check.drilldowns = try_build_drilldowns(check.type, check.config)
     return check
 
 

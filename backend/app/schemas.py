@@ -211,6 +211,16 @@ class CheckVersionOut(BaseModel):
     created_at: datetime
 
 
+class DrilldownOut(BaseModel):
+    """A short query listing the rows behind one finding (checks/drilldown.py)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    metric: str
+    label: str
+    sql: str
+
+
 class CheckOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -220,6 +230,7 @@ class CheckOut(BaseModel):
     rationale: str | None
     statements: list[CheckStatementOut] = []
     statements_error: str | None = None
+    drilldowns: list[DrilldownOut] = []
     type: str
     schedule: str
     enabled: bool

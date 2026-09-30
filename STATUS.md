@@ -276,6 +276,27 @@ Verified live with `claude-cli` on six failing checks: five drafts accepted
 and matching the metrics, one citing a number that exists nowhere replaced
 by the template.
 
+### Drill-down queries: the rows behind a finding (`checks/drilldown.py`)
+
+A check's own statement is 100+ lines, because it proves four things in one
+snapshot of a pipeline that is writing (b2s_parity.py). Nobody needs to read
+that to see which 259 keys are missing. Each finding now also has a short
+query - about the size of the old hand-written parity SQL - that lists its
+rows, capped at 1000: missing, extra, duplicates and value mismatches for
+parity; the five SCD2 assertions; null rows for a null rate. Built on read
+from the config and served as `drilldowns` on `GET /api/checks/...`, like
+the statements.
+
+Each must list exactly what its metric counts, or it is a second, disagreeing
+definition of the finding. Verified live across every parity, SCD2 and null
+rate check: 65 of 67 counts matched the check's own. The two that did not
+came from the generator MERGE below, whose RANDOM() filter no two queries
+can agree on.
+
+In the UI they sit behind a "Queries (n)" button on the run's explanation
+box, counting only findings that are non-zero on that run - nothing is shown
+until asked for.
+
 ### A key from a joined table is checked through the MERGE's own query
 
 A MERGE that takes its key from a lookup (`x.INDIVIDUAL_ID` via the identity
@@ -894,10 +915,10 @@ npm run dev
 
 ## Known rough edges / things to fix eventually
 
-- **MERGEs inside the test-data procedure (`generator.sql`) are derived as
-  pipeline hops.** `CUSTOMERS_RAW -> MEMBERS_RAW` now compiles and fails with
-  a random filter and a synthetic payload. Untick or disable it until
-  derivation skips procedures whose filters are nondeterministic
+- ~~MERGEs inside the test-data procedure are derived as pipeline hops~~
+  **fixed for derivation**: a MERGE filtered by RANDOM()/UNIFORM()/SEQn()
+  gets no parity check and the coverage report says why. The existing
+  CUSTOMERS_RAW -> MEMBERS_RAW check predates this; disable or delete it
 - ~~A parity check can pass on nothing~~ **now not monitored** when every
   source row is still settling. Still open: a TRUNCATE + INSERT source has
   no per-row settle time at all, so these checks cannot run until parity

@@ -358,6 +358,13 @@ def _source_query(
     return SourceQuery(sql=sql, key_columns=keys, value_columns=values), None
 
 
+_NONDETERMINISTIC = re.compile(r"\b(RANDOM|UNIFORM|NORMAL|RANDSTR|UUID_STRING|SEQ[1248]?)\s*\(", re.IGNORECASE)
+
+
+def _is_nondeterministic(predicate: str | None) -> bool:
+    return bool(predicate and _NONDETERMINISTIC.search(predicate))
+
+
 def _parity_proposal(
     merge: ParsedMerge, tables: dict[str, ParsedTable], streams: dict[str, str] | None = None
 ) -> CheckProposal | None:
@@ -388,6 +395,14 @@ def _parity_proposal(
         # An always-passing check is worse than an absent one: it occupies a
         # slot in the coverage count, so the report reads as "this table is
         # covered" when nothing about it is being tested.
+        return None
+
+    if _is_nondeterministic(merge["filter_predicate"]):
+        # `UNIFORM(0, 1, RANDOM()) = 1` picks a different set of rows each time
+        # it is evaluated, so no comparison - not even the check with itself -
+        # can agree on what the source side holds. This is how test-data
+        # generators are written, and deriving parity from one produced a check
+        # that failed on noise.
         return None
 
     landing = is_landing_object(source)
@@ -822,6 +837,12 @@ def _parity_gap_reason(
         return (
             f"The MERGE in {merge['file_path']} has no ON condition the parser could read as "
             "a key. Parity is keyed comparison, so without a key it falls back to row count."
+        )
+    if _is_nondeterministic(merge["filter_predicate"]):
+        return (
+            f"The MERGE in {merge['file_path']} filters with `{merge['filter_predicate']}`, which "
+            "selects different rows every time it runs - so no comparison can agree on what the "
+            "source holds. This is usually a test-data generator, not a pipeline hop."
         )
     source_table = tables.get(merge["source"])
     if source_table is None:

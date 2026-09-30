@@ -33,15 +33,9 @@ function scheduleText(cron: string): string {
 /** Warehouse timestamps to the minute - milliseconds are noise in a range. */
 const trimTime = (v: string | null) => (v && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/.test(v) ? v.slice(0, 16) : v);
 
-function rangeText(c: ColumnProfile): string {
-  if (c.family === "TEMPORAL") {
-    const [lo, hi] = [trimTime(c.min_value), trimTime(c.max_value)];
-    return lo === hi ? (lo ?? "—") : `${lo ?? "?"} → ${hi ?? "?"}`;
-  }
-  if (c.min_value === null && c.max_value === null) return "—";
-  if (c.min_value === c.max_value) return c.min_value ?? "—";
-  return `${c.min_value ?? "?"} → ${c.max_value ?? "?"}`;
-}
+/** Numeric and text (length) columns show their stored value as-is; temporal ones are trimmed to the minute. */
+const minText = (c: ColumnProfile) => (c.family === "TEMPORAL" ? trimTime(c.min_value) : c.min_value) ?? "—";
+const maxText = (c: ColumnProfile) => (c.family === "TEMPORAL" ? trimTime(c.max_value) : c.max_value) ?? "—";
 
 export function ProfileTable() {
   const { slug = "", targetId = "" } = useParams();
@@ -70,15 +64,6 @@ export function ProfileTable() {
   const latestRunId = detail.history[detail.history.length - 1]?.run_id;
   const flaggedRuns = (column: string | null, metrics: string[]) =>
     new Set(detail.anomalies.filter((a) => a.column_name === column && metrics.includes(a.metric)).map((a) => a.run_id));
-
-  const series = (column: string, key: "null_ratio" | "distinct_count" | "mean", metrics: string[]): SparkPoint[] => {
-    const flagged = flaggedRuns(column, metrics);
-    return detail.history.map((h) => ({
-      at: h.at,
-      value: h.columns[column]?.[key] ?? null,
-      flagged: flagged.has(h.run_id),
-    }));
-  };
 
   const rowFlags = flaggedRuns(null, ["row_volume", "row_count"]);
   const rowSeries: SparkPoint[] = detail.history.map((h) => ({
@@ -221,7 +206,6 @@ export function ProfileTable() {
                   <th className="px-4 py-2.5 font-normal" title="% of rows where the value is NULL - the field has nothing stored">
                     Null
                   </th>
-                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Null trend</th>
                   <th className="px-4 py-2.5 font-normal">Distinct</th>
                   <th
                     className="px-4 py-2.5 font-normal"
@@ -229,9 +213,13 @@ export function ProfileTable() {
                   >
                     Blank
                   </th>
-                  <th className="px-4 py-2.5 font-normal">Range</th>
+                  <th className="px-4 py-2.5 font-normal" title="Text columns show the shortest value's length, not the value">
+                    Min
+                  </th>
+                  <th className="px-4 py-2.5 font-normal" title="Text columns show the longest value's length, not the value">
+                    Max
+                  </th>
                   <th className="px-4 py-2.5 font-normal">Mean</th>
-                  <th className="whitespace-nowrap px-4 py-2.5 font-normal">Mean trend</th>
                 </tr>
               </thead>
               <tbody>
@@ -252,13 +240,6 @@ export function ProfileTable() {
                       >
                         {c.null_ratio === null ? "—" : pct(c.null_ratio)}
                       </td>
-                      <td className="px-4 py-2.5">
-                        <Sparkline
-                          points={series(c.column_name, "null_ratio", ["null_ratio", "all_null"])}
-                          format={pct}
-                          label={`${c.column_name} null rate`}
-                        />
-                      </td>
                       <td className="px-4 py-2.5 font-mono text-sm text-foreground">
                         {c.distinct_count === null ? "—" : c.distinct_count.toLocaleString()}
                         {c.distinct_count !== null && nonNull > 0 && (
@@ -270,7 +251,8 @@ export function ProfileTable() {
                       <td className="px-4 py-2.5 font-mono text-sm text-foreground">
                         {c.blank_count === null || nonNull === 0 ? "—" : pct(c.blank_count / nonNull)}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-foreground">{rangeText(c)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-foreground">{minText(c)}</td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-foreground">{maxText(c)}</td>
                       <td className="whitespace-nowrap px-4 py-2.5 font-mono text-sm text-foreground">
                         {c.mean_numeric === null
                           ? "—"
@@ -279,17 +261,6 @@ export function ProfileTable() {
                             : c.family === "TEXT"
                               ? `${c.mean_numeric.toFixed(1)} chars`
                               : num(c.mean_numeric)}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        {c.family === "NUMERIC" || c.family === "TEXT" || c.family === "BOOLEAN" ? (
-                          <Sparkline
-                            points={series(c.column_name, "mean", ["mean", "mean_length", "true_ratio"])}
-                            format={c.family === "BOOLEAN" ? pct : num}
-                            label={`${c.column_name} mean`}
-                          />
-                        ) : (
-                          <span className="text-zinc-600">—</span>
-                        )}
                       </td>
                     </tr>
                   );

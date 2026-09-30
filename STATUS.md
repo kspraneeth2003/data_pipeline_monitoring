@@ -1,6 +1,6 @@
 # Project Status / Handoff Notes
 
-Read this first if you're picking this up in a new session. High-level requirements/plan/milestones live in `PLAN.md` - this file is "what's actually been built so far and how to pick it back up," updated as of **2026-09-23**.
+Read this first if you're picking this up in a new session. High-level requirements/plan/milestones live in `PLAN.md` - this file is "what's actually been built so far and how to pick it back up," updated as of **2026-09-30**.
 The *target* shape - what a project is, what a test is, the sections a user navigates - is in `FLOW.md`.
 
 ## TL;DR
@@ -234,6 +234,48 @@ pass; GOLD.EMAIL and GOLD.LOYALTY_DAILY (keyed through the XREF join) are not
 monitored. Two repaired checks then failed for reasons that are *not* syntax -
 see the known rough edges.
 
+### Report-only metrics, and what each run found (`checks/explain.py`)
+
+Two gaps the old spreadsheet process covered by hand and this app did not.
+
+**Report-only metrics.** Parity and SCD2 configs take `reportOnly`, a list
+of metric names (`extraInSilver`, `gappedVersions`, ...). A breach on a
+listed metric is still recorded - under `metrics.reported`, with value and
+threshold - and named in the message, but it does not decide the verdict.
+The case it exists for is extras against a point-in-time export: the target
+keeps loading after the cut, so extras only grow, and the only alternative
+was a large `maxExtraInSilver` that goes stale and hides real extras. The
+SCD2 current-flag / open-ended disagreement cannot be demoted.
+
+**The run explanation.** Every run stores `check_runs.explanation`
+(migration `f2b7c4d9e1a3`): two or three sentences on what exactly is off
+and how big, shown at the top of the check page and on every run row. It is
+the *what*; RCA stays the *why*. Two layers:
+
+- `template_text` builds it from the metrics alone, per check type. With
+  `AGENT_MODEL` unset this is the whole feature, and it is also what shows
+  whenever the model path declines. It says so when a pass compared 0 keys.
+- The model rewrites it for failures and report-only breaches only. A draft
+  is discarded for the template if it cites a number not in its facts
+  (digits or spelled out, rounding allowed), uses pass/fail words, uses
+  markdown, or runs long. Shares and list lengths are precomputed and handed
+  over so there is no arithmetic to get wrong. These guards are code for the
+  same reason as the reporting agent's: a fabricated explanation reads
+  exactly like a true one. `rejected` on the stored explanation says why a
+  draft was dropped.
+
+Cost is bounded by reuse, not by hope: identical metrics keep the previous
+text; the same shape with new numbers gets the template until
+`EXPLAIN_AI_COOLDOWN_MINUTES` (default 60) since the model was last *asked*
+- a rejected ask counts, so a model that keeps failing the guards is not
+called every run. A change of status or of which metrics breached always
+asks. The explanation is written after the run commits and can only roll
+back itself.
+
+Verified live with `claude-cli` on six failing checks: five drafts accepted
+and matching the metrics, one citing a number that exists nowhere replaced
+by the template.
+
 ### Parser fixes driven by the FCC reference repo
 
 Each of these was a case of deriving *nothing* while looking like it had derived
@@ -293,6 +335,9 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
       defects.py          Pure: is an errored run a pipeline problem or a defect in the check?
                             Also localize_parity_columns, shared with derivation
       repair.py           EXPLAIN-compiles, describes live tables, applies a repair or files it
+      explain.py          The "what this run found" box: a template from the metrics, optionally
+                            rewritten by the model and discarded if it cites an unknown number or
+                            states a verdict. Reuse and a cooldown keep model calls rare
       runner.py           execute_check(db, check_id): persists a run, resolves an ERROR into
                             repaired/INVALID first, runs RCA on failure, then
                             hands to monitoring/triage. It no longer files tickets itself -
@@ -787,7 +832,17 @@ npm run dev
 - **A parity check can pass on nothing.** BI.INDIVIDUAL_ENGAGEMENT reports "0
   settled key(s)" because GOLD.INDIVIDUAL's UPDATED_AT is rewritten every
   run, so every row is always inside the settling lag. A pass that compared
-  zero rows should not read as green
+  zero rows should not read as green. The run explanation now says so in
+  words ("Nothing was compared"), but the status is still PASSED
+- **Schema drift treats Snowflake type aliases as drift.** DPM_CUSTOMER_360.
+  GOLD.EMAIL fails because its contract says `STRING` and Snowflake reports
+  `VARCHAR(16777216)` - the same type. `_run_schema_drift` compares by
+  prefix; it needs the alias table (STRING/TEXT -> VARCHAR, INT -> NUMBER,
+  ...) before any DDL-derived contract can be trusted
+- **A `--reload` dev server can keep serving old code on Windows.** Found
+  when the running backend (started 2026-09-28) did not pick up the
+  explanation commits. Restart it after pulling anything that touches
+  `models.py` or `schemas.py`
 
 - **Neither agent has been run against a live model.** Everything below the
   model - prompts, tools, schemas, budgets, and every branch of the applying

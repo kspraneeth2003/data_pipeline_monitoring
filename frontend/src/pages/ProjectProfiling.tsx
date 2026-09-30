@@ -101,7 +101,7 @@ function TableRow({
 
   return (
     <tr className="border-t border-border transition-colors hover:bg-white/[0.02]">
-      <td className="max-w-0 px-4 py-2.5">
+      <td className="max-w-0 py-2.5 pl-12 pr-4">
         {target ? (
           <Link
             to={`/projects/${slug}/profiling/${target.id}`}
@@ -179,10 +179,10 @@ function SchemaSection({
 
   return (
     <details open className="group/schema border-t border-border first:border-t-0">
-      <summary className="flex list-none items-center justify-between gap-4 px-4 py-2 [&::-webkit-details-marker]:hidden">
+      <summary className="flex list-none items-center justify-between gap-4 py-2 pl-8 pr-4 [&::-webkit-details-marker]:hidden">
         <span className="flex min-w-0 cursor-pointer items-center gap-2">
-          <Chevron className="text-zinc-500 group-open/schema:rotate-90" />
-          <span className="truncate font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-400">
+          <Chevron className="text-zinc-400 group-open/schema:rotate-90" />
+          <span className="truncate font-mono text-xs uppercase tracking-[0.15em] text-zinc-200">
             {schema.name} · {schema.tables.length}
           </span>
         </span>
@@ -207,7 +207,7 @@ function SchemaSection({
         </colgroup>
         <thead>
           <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
-            <th className="px-4 py-2 font-normal">Table</th>
+            <th className="py-2 pl-12 pr-4 font-normal">Table</th>
             <th className="px-4 py-2 text-right font-normal">Rows</th>
             <th className="px-4 py-2 font-normal">Last profile</th>
             <th className="px-4 py-2 font-normal">Findings</th>

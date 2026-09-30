@@ -64,6 +64,26 @@ export function ProjectRevisions() {
     }
   };
 
+  // For after DPM itself improves, when the pipeline has not moved: the scan
+  // above would find nothing, and the checks would stay on older derivation.
+  const rederive = async () => {
+    setBusy("rederive");
+    setNote(null);
+    try {
+      const result = await api.rederive(slug);
+      setNote(
+        result.revisions
+          ? `${result.revisions} check(s) would be derived differently by DPM's current rules - review below.`
+          : "Every derived check already matches what DPM's current rules produce.",
+      );
+      load();
+    } catch (error) {
+      setNote(error instanceof Error ? error.message : "Re-derive failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const review = async (id: string, accept: boolean) => {
     setBusy(id);
     try {
@@ -89,17 +109,29 @@ export function ProjectRevisions() {
         <div>
           <h1 className="text-xl font-semibold text-foreground">Proposed changes</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            Raised when the pipeline's DDL moves and the checks no longer match it.
+            Raised when the pipeline's DDL moves and the checks no longer match it, or when
+            DPM's own rules improve (Re-derive).
           </p>
         </div>
-        <button
-          type="button"
-          onClick={scan}
-          disabled={busy === "scan"}
-          className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:border-accent disabled:opacity-50"
-        >
-          {busy === "scan" ? "Scanning…" : "Scan for changes"}
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={rederive}
+            disabled={busy === "rederive"}
+            title="Re-derive every check with DPM's current rules, against the same repository"
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:border-accent disabled:opacity-50"
+          >
+            {busy === "rederive" ? "Re-deriving…" : "Re-derive"}
+          </button>
+          <button
+            type="button"
+            onClick={scan}
+            disabled={busy === "scan"}
+            className="rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:border-accent disabled:opacity-50"
+          >
+            {busy === "scan" ? "Scanning…" : "Scan for changes"}
+          </button>
+        </div>
       </div>
 
       {note && (

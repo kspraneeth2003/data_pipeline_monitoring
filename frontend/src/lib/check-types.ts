@@ -1,4 +1,4 @@
-export type FieldKind = "text" | "number" | "json" | "multi";
+export type FieldKind = "text" | "number" | "json" | "multi" | "sql";
 
 export type FieldOption = { value: string; label: string };
 
@@ -117,6 +117,14 @@ export const CHECK_TYPES: CheckTypeMeta[] = [
         label: "Target object (fully qualified)",
         kind: "text",
         placeholder: "DB.SILVER.TABLE",
+      },
+      {
+        key: "bronzeQuery",
+        label:
+          "Source query - instead of the source object, when the MERGE's key comes from a table it joins. The MERGE's USING query with streams read as their tables; key and value expressions then name its output columns, and the settle column must be one of them",
+        kind: "sql",
+        placeholder: "SELECT p.UPDATED_AT AS DPM_SETTLED_AT, x.INDIVIDUAL_ID AS INDIVIDUAL_ID, ...",
+        optional: true,
       },
       {
         key: "keyColumns",

@@ -270,12 +270,13 @@ export function CheckForm({
               {field.label}
               {field.optional && <span className="ml-1 text-xs text-zinc-400">(optional)</span>}
             </span>
-            {field.kind === "json" ? (
+            {field.kind === "json" || field.kind === "sql" ? (
               <textarea
                 value={fieldValues[field.key] ?? ""}
                 onChange={(e) => setField(field.key, e.target.value)}
                 placeholder={field.placeholder}
-                rows={4}
+                rows={field.kind === "sql" ? 8 : 4}
+                spellCheck={false}
                 className={`${inputClass} font-mono text-xs`}
               />
             ) : (

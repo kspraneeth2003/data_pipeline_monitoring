@@ -439,6 +439,9 @@ export const api = {
     request<CheckRevision[]>(`/api/projects/${slug}/revisions${status ? `?status=${status}` : ""}`),
   runMaintenance: (slug: string) =>
     request<MaintenanceResult>(`/api/projects/${slug}/maintenance`, { method: "POST" }),
+  /** Re-derive with DPM's current rules against the same repository; differences become PENDING revisions. */
+  rederive: (slug: string) =>
+    request<MaintenanceResult>(`/api/projects/${slug}/rederive`, { method: "POST" }),
   applyRevision: (id: string) =>
     request<CheckRevision>(`/api/revisions/${id}/apply`, { method: "POST" }),
   rejectRevision: (id: string) =>

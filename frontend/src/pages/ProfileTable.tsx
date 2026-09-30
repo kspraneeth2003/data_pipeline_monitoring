@@ -37,7 +37,7 @@ const trimTime = (v: string | null) => (v && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}/
 const minText = (c: ColumnProfile) => (c.family === "TEMPORAL" ? trimTime(c.min_value) : c.min_value) ?? "—";
 const maxText = (c: ColumnProfile) => (c.family === "TEMPORAL" ? trimTime(c.max_value) : c.max_value) ?? "—";
 
-type SortKey = "column" | "null" | "distinct" | "blank" | "min" | "max" | "mean";
+type SortKey = "column" | "type" | "null" | "distinct" | "blank" | "min" | "max" | "mean";
 type Sort = { key: SortKey; dir: "asc" | "desc" };
 
 /** A column's blank rate as a fraction of non-null rows - the same number the Blank cell shows. */
@@ -50,6 +50,8 @@ function sortValue(c: ColumnProfile, key: SortKey): string | number | null {
   switch (key) {
     case "column":
       return c.column_name;
+    case "type":
+      return c.data_type;
     case "null":
       return c.null_ratio;
     case "distinct":
@@ -300,6 +302,7 @@ export function ProfileTable() {
               <thead>
                 <tr className="font-mono text-[11px] uppercase tracking-[0.15em] text-zinc-500">
                   <SortableHeader label="Column" sortKey="column" sort={sort} onSort={toggleSort} />
+                  <SortableHeader label="Type" sortKey="type" sort={sort} onSort={toggleSort} />
                   <SortableHeader
                     label="Null"
                     sortKey="null"
@@ -341,7 +344,9 @@ export function ProfileTable() {
                       <td className="px-4 py-2.5">
                         <span className="font-mono text-sm text-foreground">{c.column_name}</span>
                         {flagged && <span className="ml-2 font-mono text-[11px] text-red-400">flagged</span>}
-                        <p className="font-mono text-[11px] text-zinc-500">{c.data_type.toLowerCase()}</p>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-zinc-400">
+                        {c.data_type.toLowerCase()}
                       </td>
                       <td
                         className={`px-4 py-2.5 font-mono text-sm ${

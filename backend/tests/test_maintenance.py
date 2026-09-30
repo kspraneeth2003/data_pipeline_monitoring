@@ -242,6 +242,46 @@ class TestRuleBasedReconciliation:
         assert service.run_maintenance(db, project, include_warehouse=False)["changed"] is False
 
 
+class TestRederive(TestRuleBasedReconciliation):
+    """After DPM's own rules change, with no pipeline change at all."""
+
+    # The inherited tests exercise run_maintenance and still apply; these add
+    # the re-derive entry point on top.
+
+    def test_a_stale_derivation_is_proposed_without_any_ddl_change(self, db, project, repo):
+        self.add_check(db, project, self.stale_config())
+        before = project.repo_commit
+
+        result = service.rederive_project(db, project)
+
+        assert result["revisions"] == 1
+        revision = db.query(CheckRevision).one()
+        assert revision.status == RevisionStatus.PENDING.value
+        assert "current rules" in revision.reason
+        # No pipeline change was examined, so the watermark must not move.
+        assert project.repo_commit == before
+
+    def test_rederive_respects_human_checks(self, db, project, repo):
+        self.add_check(db, project, self.stale_config(), origin=CheckOrigin.HUMAN.value)
+        assert service.rederive_project(db, project)["revisions"] == 0
+
+    def test_an_up_to_date_check_gets_no_proposal(self, db, project, repo):
+        self.add_check(db, project, self.stale_config())
+        service.rederive_project(db, project)
+        db.query(CheckRevision).delete()
+        db.commit()
+        check = project.databases[0].checks[0]
+        derived = service._derived_for(project, repo)
+        parity = next(
+            p for p in derived
+            if p["type"] == "BRONZE_TO_SILVER_PARITY"
+            and p["config"]["silverObject"] == check.config["silverObject"]
+        )
+        check.config = parity["config"]
+        db.commit()
+        assert service.rederive_project(db, project)["revisions"] == 0
+
+
 class TestAutoApplyBoundary:
     def decision(self, confidence=0.9, action="UPDATE"):
         from app.maintenance.agent import CheckDecision

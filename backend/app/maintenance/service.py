@@ -51,8 +51,15 @@ def _existing_revision(db: Session, check_id: str, config: dict) -> CheckRevisio
     ).first()
 
 
+_DDL_CHANGED = "Re-derived from the changed DDL: the generated config no longer matches the stored one."
+
+
 def reconcile_by_rules(
-    db: Session, project: models.Project, report: ChangeReport, derived: list[CheckProposal]
+    db: Session,
+    project: models.Project,
+    report: ChangeReport | None,
+    derived: list[CheckProposal],
+    why: str = _DDL_CHANGED,
 ) -> list[CheckRevision]:
     """The no-model path: propose an update wherever a derived config
     differs from what is stored, matched on the objects a check points at.
@@ -88,17 +95,16 @@ def reconcile_by_rules(
             proposed_schedule=proposal["schedule"],
             proposed_config=proposal["config"],
             reason=(
-                "Re-derived from the changed DDL: the generated config no longer matches "
-                f"the stored one. {proposal['rationale']} "
+                f"{why} {proposal['rationale']} "
                 "Proposed by rule without an agent, so it has not been checked for whether "
                 "this is a rename or a replacement - review before applying."
             ),
             confidence=None,
             detected_change={
-                "changed_paths": report.repo.changed_paths if report.repo else [],
-                "subjects": report.repo.subjects if report.repo else [],
+                "changed_paths": report.repo.changed_paths if report and report.repo else [],
+                "subjects": report.repo.subjects if report and report.repo else [],
             },
-            triggered_by_commit=report.repo.to_commit if report.repo else None,
+            triggered_by_commit=report.repo.to_commit if report and report.repo else None,
         )
         db.add(revision)
         revisions.append(revision)
@@ -190,6 +196,34 @@ def run_maintenance(
     project.updated_at = utcnow()
     db.commit()
     return result
+
+
+def rederive_project(db: Session, project: models.Project) -> dict:
+    """Re-derive against the unchanged repository, and propose what differs.
+
+    Maintenance re-derives only when the pipeline's DDL moves. That misses the
+    other direction: DPM's own derivation getting better - reading a MERGE's
+    USING query where it used to give up - leaves every existing check on the
+    old, weaker derivation until someone happens to edit the DDL. This is the
+    pass for that, run after DPM itself changes.
+
+    Same consent boundary as the rule path: PENDING revisions on the Changes
+    page, never an edit, never on a check a person wrote or edited. The
+    maintenance watermark is not moved - no pipeline change was examined.
+    """
+    checkout = fetch_repo(project.repo_url, None, project.repo_ref)
+    derived = _derived_for(project, Path(checkout["path"]))
+    revisions = reconcile_by_rules(
+        db,
+        project,
+        None,
+        derived,
+        why=(
+            "Re-derived with DPM's current rules against the same repository: the check "
+            "stored today was derived by an older, weaker version of them."
+        ),
+    )
+    return {"project": project.name, "revisions": len(revisions)}
 
 
 def run_maintenance_all(db: Session) -> list[dict]:

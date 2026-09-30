@@ -19,7 +19,7 @@ from app.checks.config_schemas import (
 
 @dataclass
 class CheckOutcome:
-    status: str  # PASSED | FAILED | ERROR (runner.py may turn an ERROR into INVALID)
+    status: str  # PASSED | FAILED | ERROR | INVALID (parity on nothing); runner.py may also make INVALID or UNREACHABLE
     metrics: dict = field(default_factory=dict)
     message: str = ""
 
@@ -199,6 +199,10 @@ def _as_int(value) -> int:
     return int(value) if value is not None else 0
 
 
+def _fmt_minutes(minutes: float) -> str:
+    return str(int(minutes)) if float(minutes).is_integer() else f"{minutes:g}"
+
+
 @dataclass
 class _Breach:
     metric: str
@@ -280,6 +284,24 @@ def _run_bronze_to_silver_parity(connector: Connector, raw_config: dict) -> Chec
             "valueMismatch": _sample("SAMPLE_VALUE_MISMATCH"),
         },
     }
+
+    if metrics["bronzeDistinctKeys"] == 0 and silver_ahead > 0:
+        # Every source row is inside the settling window, so nothing was
+        # compared - and a pass here would be green for having looked at
+        # nothing. The usual cause is a source rebuilt by TRUNCATE + INSERT
+        # every run, whose timestamp is always "just now": it has no per-row
+        # settle time for a lag to wait out. That is a limit of this check, not
+        # news about the pipeline, so it reads as not monitored (FLOW.md §2.1).
+        return CheckOutcome(
+            status="INVALID",
+            metrics=metrics,
+            message=(
+                f"Not monitored: every row of {config.bronzeObject} is newer than the "
+                f"{_fmt_minutes(config.lagMinutes)}-minute settling window, so nothing could be "
+                f"compared. Its {config.bronzeLoadedAtColumn} is probably rewritten on every run "
+                f"(a table rebuilt with TRUNCATE + INSERT), which leaves no per-row settle time."
+            ),
+        )
 
     # Ordered worst-first: a dedup failure is the headline finding, since it is
     # the property this check exists to prove.

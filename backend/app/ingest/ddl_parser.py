@@ -19,7 +19,7 @@ review screen to correct whatever was missed.
 
 import re
 from pathlib import Path
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class ParsedColumn(TypedDict):
@@ -45,6 +45,10 @@ class ColumnMapping(TypedDict):
     name: str
     source_expr: str
     target_expr: str
+    # The column's name in the USING select's output (`src.INDIVIDUAL_ID`).
+    # A check that reads the USING query itself, rather than its first table,
+    # refers to columns by this name - see ParsedMerge.using_sql.
+    source_name: NotRequired[str]
 
 
 class ParsedMerge(TypedDict):
@@ -68,6 +72,10 @@ class ParsedMerge(TypedDict):
     # one (an SCD2 "close" step) just edits rows that are already there, and
     # parity derived from it asserts presence the statement never guaranteed.
     inserts: bool
+    # The USING body, verbatim minus comments. Reading it back as the source
+    # side is how a MERGE whose key comes from a joined table can still be
+    # checked: inside its own query every alias is in scope.
+    using_sql: str
     file_path: str
 
 
@@ -471,12 +479,17 @@ def parse_merges(sql: str, file_path: str) -> list[ParsedMerge]:
             if not source_expr or not re.fullmatch(r"[\w$]+", target_col):
                 continue
             key_columns.append(
-                {"name": target_col, "source_expr": source_expr, "target_expr": target_col}
+                {
+                    "name": target_col,
+                    "source_expr": source_expr,
+                    "target_expr": target_col,
+                    "source_name": source_col,
+                }
             )
 
         key_names = {k["name"] for k in key_columns}
         value_columns: list[ColumnMapping] = [
-            {"name": name, "source_expr": expr, "target_expr": name}
+            {"name": name, "source_expr": expr, "target_expr": name, "source_name": name}
             for name, expr in source_map.items()
             if name not in key_names
         ]
@@ -499,6 +512,7 @@ def parse_merges(sql: str, file_path: str) -> list[ParsedMerge]:
                         re.IGNORECASE | re.DOTALL,
                     )
                 ),
+                "using_sql": strip_comments(using_body).strip(),
                 "file_path": file_path,
             }
         )

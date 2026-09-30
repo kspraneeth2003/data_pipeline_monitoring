@@ -212,12 +212,18 @@ def referenced_columns(check_type: str, config: dict) -> dict[str, set[str]]:
         )
     elif check_type == "BRONZE_TO_SILVER_PARITY":
         columns = (config.get("keyColumns") or []) + (config.get("valueColumns") or [])
-        add(
-            config.get("bronzeObject"),
-            *(c.get("bronze") for c in columns),
-            config.get("bronzeLoadedAtColumn"),
-            config.get("bronzeSequenceColumn"),
-        )
+        if config.get("bronzeQuery"):
+            # Source-side names are the query's output columns, not the
+            # driving table's, so checking them against that table would call
+            # every key "missing" and blame the pipeline for our query.
+            add(config.get("bronzeObject"))
+        else:
+            add(
+                config.get("bronzeObject"),
+                *(c.get("bronze") for c in columns),
+                config.get("bronzeLoadedAtColumn"),
+                config.get("bronzeSequenceColumn"),
+            )
         add(config.get("silverObject"), *(c.get("silver") for c in columns))
     return needed
 

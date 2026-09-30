@@ -276,6 +276,45 @@ Verified live with `claude-cli` on six failing checks: five drafts accepted
 and matching the metrics, one citing a number that exists nowhere replaced
 by the template.
 
+### A key from a joined table is checked through the MERGE's own query
+
+A MERGE that takes its key from a lookup (`x.INDIVIDUAL_ID` via the identity
+XREF) could not be checked table-to-table - the source table does not have
+that column - so it was derived to nothing, or repaired to "not monitored".
+GOLD.LOYALTY_DAILY and GOLD.EMAIL were both in that state.
+
+`BronzeToSilverParityConfig.bronzeQuery` makes the source side a query
+instead of a table: the MERGE's USING body (the parser now keeps it as
+`ParsedMerge.using_sql`), where every alias is in scope and the key is just
+an output column. `heuristic._source_query` rewrites exactly two things,
+both shown on the SQL tab: stream references become their base tables, and
+the driving table's settle timestamp is projected as `DPM_SETTLED_AT`. It
+refuses - leaving the table uncovered with that reason - whenever the
+rewrite would change the query's meaning: stream metadata, procedure
+variables, DISTINCT or GROUP BY. `bronzeQuery` cannot combine with
+`asOfTimestamp`, and repair does not look for query output columns on the
+driving table.
+
+Verified live: both compile under EXPLAIN. LOYALTY_DAILY now **fails on
+real findings** - 259 source keys missing, 420 extra; gold was last written
+about six hours before the source's newest updates, and every missing key
+has an extra on the same day, which is the shape of members re-mapped to a
+different individual that gold never re-merged. GOLD.EMAIL cannot settle
+(below).
+
+**A parity check that compared nothing is not monitored, not green.** When
+no source key is settled but rows are still settling, the engine returns
+INVALID with the reason. The cause in both known cases (NORMALIZE_EMAIL,
+GOLD.INDIVIDUAL) is a table rebuilt by TRUNCATE + INSERT, whose timestamp
+is always "just now" and so has no per-row settle time to wait out.
+
+**Re-deriving after DPM changes** (`POST /api/projects/{slug}/rederive`,
+`maintenance.service.rederive_project`). Maintenance only re-derives when
+the pipeline's DDL moves, so an improvement to derivation never reached
+existing checks. This runs today's rules against the same repository and
+files any difference as a PENDING revision on the Changes page - never an
+edit, never against a human-written or edited check, watermark untouched.
+
 ### A check that cannot reach its data is not a pipeline error (`UNREACHABLE`)
 
 ERROR used to cover everything that stopped a check: a dropped column, our
@@ -364,6 +403,7 @@ backend/                  FastAPI + SQLAlchemy + Alembic (Python, managed with `
       defects.py          Pure: is an errored run a pipeline problem or a defect in the check?
                             Also localize_parity_columns, shared with derivation
       repair.py           EXPLAIN-compiles, describes live tables, applies a repair or files it
+      (b2s_parity.py also reads a `bronzeQuery` - the MERGE's USING body - as its source)
       explain.py          The "what this run found" box: a template from the metrics, optionally
                             rewritten by the model and discarded if it cites an unknown number or
                             states a verdict. Reuse and a cooldown keep model calls rare
@@ -858,11 +898,11 @@ npm run dev
   pipeline hops.** `CUSTOMERS_RAW -> MEMBERS_RAW` now compiles and fails with
   a random filter and a synthetic payload. Untick or disable it until
   derivation skips procedures whose filters are nondeterministic
-- **A parity check can pass on nothing.** BI.INDIVIDUAL_ENGAGEMENT reports "0
-  settled key(s)" because GOLD.INDIVIDUAL's UPDATED_AT is rewritten every
-  run, so every row is always inside the settling lag. A pass that compared
-  zero rows should not read as green. The run explanation now says so in
-  words ("Nothing was compared"), but the status is still PASSED
+- ~~A parity check can pass on nothing~~ **now not monitored** when every
+  source row is still settling. Still open: a TRUNCATE + INSERT source has
+  no per-row settle time at all, so these checks cannot run until parity
+  can compare against the source as of its last rebuild (time travel on the
+  source side) rather than waiting out a lag
 - **Schema drift treats Snowflake type aliases as drift.** DPM_CUSTOMER_360.
   GOLD.EMAIL fails because its contract says `STRING` and Snowflake reports
   `VARCHAR(16777216)` - the same type. `_run_schema_drift` compares by

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app import models, schemas
 from app.config import settings
 from app.db import get_db
-from app.maintenance.service import run_maintenance
+from app.maintenance.service import rederive_project, run_maintenance
 from app.models import (
     CheckRevision,
     Incident,
@@ -119,6 +119,18 @@ def trigger_maintenance(slug: str, db: Session = Depends(get_db)):
     return schemas.MaintenanceResultOut(
         **run_maintenance(db, project, settings.maintenance_scan_warehouse)
     )
+
+
+@router.post("/projects/{slug}/rederive", response_model=schemas.MaintenanceResultOut)
+def trigger_rederive(slug: str, db: Session = Depends(get_db)):
+    """Re-derive this project's checks with the current rules and propose any
+    difference for review - for after DPM itself changes, not the DDL."""
+    project = _project_or_404(db, slug)
+    if not project.repo_url:
+        raise HTTPException(
+            400, "This project has no repository, so there is nothing to derive from"
+        )
+    return schemas.MaintenanceResultOut(**rederive_project(db, project))
 
 
 @router.post("/revisions/{revision_id}/apply", response_model=schemas.RevisionOut)

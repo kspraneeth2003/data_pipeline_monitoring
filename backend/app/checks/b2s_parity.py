@@ -164,6 +164,9 @@ def build_parity_sql(config: BronzeToSilverParityConfig) -> str:
 
     key_str = _key_string(key_aliases)
     sample = config.sampleLimit
+    # The source is either the table or the MERGE's own USING query, named
+    # `src` so the query's text needs no change beyond what derivation made.
+    source = f"(\n{config.bronzeQuery}\n) src" if config.bronzeQuery else f"{config.bronzeObject}{at}"
 
     return f"""
 WITH bounds AS (
@@ -175,7 +178,7 @@ bronze_all AS (
   SELECT
       {bronze_keys}{bronze_values},
       {config.bronzeLoadedAtColumn} AS _LOADED_AT{bronze_seq}
-  FROM {config.bronzeObject}{at}
+  FROM {source}
   WHERE {config.bronzeLoadedAtColumn} <= (SELECT CUTOFF FROM bounds){source_filter}
 ),
 bronze_latest AS (
@@ -188,7 +191,7 @@ bronze_pending AS (
   -- above, but the MERGE task may already have written them to silver - so
   -- without this they would read as keys silver invented out of nothing.
   SELECT DISTINCT {bronze_keys_only}, 1 AS _P_PRESENT
-  FROM {config.bronzeObject}{at}
+  FROM {source}
   WHERE {config.bronzeLoadedAtColumn} > (SELECT CUTOFF FROM bounds){source_filter}
 ),
 silver_all AS (

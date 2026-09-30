@@ -20,10 +20,17 @@ up when the parser met a repo shape it does not understand.
 """
 
 import re
+from dataclasses import dataclass
 from typing import TypedDict
 
-from app.checks.defects import LocalizedColumns, localize_parity_columns
-from app.ingest.ddl_parser import ParsedColumn, ParsedMerge, ParsedRepo, ParsedTable
+from app.checks.defects import _BIND_VARIABLE, LocalizedColumns, localize_parity_columns
+from app.ingest.ddl_parser import (
+    ParsedColumn,
+    ParsedMerge,
+    ParsedRepo,
+    ParsedTable,
+    _strip_leading_ctes,
+)
 
 # Schema and table naming that marks a raw landing layer. A bronze->silver
 # parity check is only meaningful when the source really is untyped landed
@@ -279,7 +286,81 @@ def _localize_merge(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Local
     )
 
 
-def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> CheckProposal | None:
+# The column the rewritten USING query projects its settle timestamp as.
+SOURCE_QUERY_SETTLE_COLUMN = "DPM_SETTLED_AT"
+
+
+@dataclass
+class SourceQuery:
+    sql: str
+    key_columns: list[dict]
+    value_columns: list[dict]
+
+
+def _source_query(
+    merge: ParsedMerge,
+    tables: dict[str, ParsedTable],
+    streams: dict[str, str],
+    settle_column: str,
+) -> tuple[SourceQuery | None, str | None]:
+    """The MERGE's USING query, rewritten to be the source side of a check.
+
+    For a MERGE whose key comes from a joined table, a table-to-table check
+    cannot even name the key. Its own query can: every alias is in scope, and
+    the key is one of the output columns. Two rewrites, both mechanical and
+    both visible in the check's SQL:
+
+    * **Streams become their tables.** A stream in USING means "rows changed
+      since the last run"; the target accumulates every row, so comparing
+      against the stream would call everything else extra.
+    * **The settle timestamp is projected**, from the driving table, so the
+      comparison can tell a row still in flight from a lost one.
+
+    Returns (query, None) or (None, the reason it cannot be done). Each refusal
+    is a case where the rewrite would change what the query means.
+    """
+    body = (merge.get("using_sql") or "").strip()
+    if not body:
+        return None, "the parser did not keep this MERGE's USING query"
+    if "METADATA$" in body.upper():
+        return None, "its USING query reads stream metadata, which the base table does not have"
+    if _BIND_VARIABLE.search(re.sub(r"'[^']*'", "''", body)):
+        return None, "its USING query uses procedure variables, which only exist inside the procedure"
+
+    rewritten = body
+    for stream, table in streams.items():
+        rewritten = re.sub(rf"(?<![\w$.]){re.escape(stream)}(?![\w$])", table, rewritten, flags=re.IGNORECASE)
+
+    projection = _strip_leading_ctes(rewritten)
+    offset = len(rewritten) - len(projection)
+    select = re.match(r"\s*SELECT\s+(DISTINCT\s+)?", projection, re.IGNORECASE)
+    if not select:
+        return None, "its USING clause is not a plain SELECT"
+    if select.group(1) or re.search(r"\bGROUP\s+BY\b", projection, re.IGNORECASE):
+        # One more column changes what DISTINCT or GROUP BY collapses.
+        return None, "its USING query aggregates (DISTINCT / GROUP BY), so a per-row timestamp cannot be added"
+
+    alias = merge.get("source_alias")
+    settle = f"{alias.lower() if alias else merge['source']}.{settle_column}"
+    at = offset + select.end()
+    sql = f"{rewritten[:at]}{settle} AS {SOURCE_QUERY_SETTLE_COLUMN},\n      {rewritten[at:]}"
+
+    target_table = tables.get(merge["target"])
+    keys = [
+        {"name": k["name"], "bronze": k.get("source_name") or k["name"], "silver": k["target_expr"]}
+        for k in merge["key_columns"]
+    ]
+    values = [
+        {"name": v["name"], "bronze": v.get("source_name") or v["name"], "silver": v["target_expr"]}
+        for v in merge["value_columns"]
+        if _is_target_column(v["target_expr"], target_table)
+    ]
+    return SourceQuery(sql=sql, key_columns=keys, value_columns=values), None
+
+
+def _parity_proposal(
+    merge: ParsedMerge, tables: dict[str, ParsedTable], streams: dict[str, str] | None = None
+) -> CheckProposal | None:
     """Key-and-value parity for one MERGE, at whatever layer it sits.
 
     This used to fire only when the source was a landing table, on the grounds
@@ -362,14 +443,51 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
     # the source table alone, so copied verbatim they do not compile - and a
     # check that is wrong on arrival reports our fault as the pipeline's.
     localized = _localize_merge(merge, tables)
+    source_query: SourceQuery | None = None
+    query_note = ""
     if localized.blocking_reason:
-        return None
-    if localized.dropped:
+        # The key comes from a joined table. Rather than give up, read the
+        # MERGE's own query, where that key is just an output column.
+        source_query, _ = _source_query(merge, tables, streams or {}, settle_column)
+        if source_query is None:
+            return None
+        query_note = (
+            " The key comes from a table the MERGE joins in, so the source side is the "
+            "MERGE's own USING query (with streams read as their base tables) rather than "
+            f"{_table_of(source)} alone."
+        )
+        concerns.append(
+            "The source side is the MERGE's USING query, copied from the repository with two "
+            "changes: streams are read as their base tables, and "
+            f"{_table_of(source)}.{settle_column} is projected as {SOURCE_QUERY_SETTLE_COLUMN} "
+            "for the settling window. If the MERGE's query changes, this check must be "
+            "re-derived to follow it."
+        )
+    elif localized.dropped:
         concerns.append(
             "Not compared, because they are not read from the source table and a two-table "
             f"check cannot see them: {'; '.join(localized.dropped)}. Their correctness needs a "
             "check on the table they come from."
         )
+
+    source_config = (
+        {
+            "bronzeQuery": source_query.sql,
+            "bronzeLoadedAtColumn": SOURCE_QUERY_SETTLE_COLUMN,
+            # The query's own QUALIFY already picks one row per key; a
+            # tiebreaker from the driving table is not in its output.
+            "bronzeSequenceColumn": None,
+            "keyColumns": source_query.key_columns,
+            "valueColumns": source_query.value_columns,
+        }
+        if source_query
+        else {
+            "bronzeLoadedAtColumn": settle_column,
+            "bronzeSequenceColumn": _find_column(source_table, SEQUENCE_COLUMNS),
+            "keyColumns": localized.key_columns,
+            "valueColumns": localized.value_columns,
+        }
+    )
 
     return {
         "key": f"parity:{source}->{target}",
@@ -381,7 +499,7 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
         "rationale": (
             f"Derived from the MERGE in {merge['file_path']}. The key and the column "
             f"mapping are the contract that MERGE states; this check asserts it held."
-            f"{filter_note}{scd2_note}"
+            f"{filter_note}{scd2_note}{query_note}"
         ),
         "type": "BRONZE_TO_SILVER_PARITY",
         "schedule": "*/10 * * * *",
@@ -389,13 +507,12 @@ def _parity_proposal(merge: ParsedMerge, tables: dict[str, ParsedTable]) -> Chec
         "config": {
             "bronzeObject": source,
             "silverObject": target,
-            "bronzeLoadedAtColumn": settle_column,
-            "bronzeSequenceColumn": _find_column(source_table, SEQUENCE_COLUMNS),
-            "sourceFilter": merge["filter_predicate"],
+            # The query already applies the MERGE's own WHERE; lifting it again
+            # would name aliases that are not in scope outside it.
+            "sourceFilter": None if source_query else merge["filter_predicate"],
             "silverFilter": target_filter,
             "lagMinutes": DEFAULT_LAG_MINUTES,
-            "keyColumns": localized.key_columns,
-            "valueColumns": localized.value_columns,
+            **source_config,
         },
         "source": "heuristic",
         "concerns": concerns,
@@ -612,7 +729,7 @@ def propose_checks(parsed: ParsedRepo) -> list[CheckProposal]:
         # Parity is attempted at every layer, not only from a landing table.
         # A row count is the fallback for a MERGE parity cannot describe -
         # no key in the ON clause, or no timestamp to settle against.
-        proposal = _parity_proposal(merge, tables) or _row_count_proposal(merge)
+        proposal = _parity_proposal(merge, tables, parsed.get("streams") or {}) or _row_count_proposal(merge)
         if proposal:
             proposals.append(proposal)
 
@@ -676,7 +793,10 @@ class CoverageReport(TypedDict):
 
 
 def _parity_gap_reason(
-    table: ParsedTable, merges_by_target: dict[str, ParsedMerge], tables: dict[str, ParsedTable]
+    table: ParsedTable,
+    merges_by_target: dict[str, ParsedMerge],
+    tables: dict[str, ParsedTable],
+    streams: dict[str, str] | None = None,
 ) -> str:
     """Why parity could not be derived for one table - specific, not generic.
 
@@ -711,10 +831,14 @@ def _parity_gap_reason(
         )
     blocking = _localize_merge(merge, tables).blocking_reason
     if blocking:
+        settle = _settle_column(source_table, is_landing_object(merge["source"]))
+        _, why_not = (
+            _source_query(merge, tables, streams or {}, settle) if settle else (None, None)
+        )
         return (
-            f"{blocking} A parity check compares one source table to this one; a key that "
-            "is looked up from another table needs a join-coverage check instead, which is "
-            "not built yet."
+            f"{blocking} The fallback - using the MERGE's own USING query as the source side - "
+            f"is not possible either: {why_not or 'the source has no timestamp to settle on'}. "
+            "This one has to be written by hand."
         )
     return (
         f"{merge['source']} has no load or update timestamp column, so there is no way to "
@@ -774,7 +898,7 @@ def assess_coverage(parsed: ParsedRepo, proposals: list[CheckProposal]) -> Cover
                 "parity": False,
                 "freshness": "FRESHNESS" in types,
                 "schema_drift": "SCHEMA_DRIFT" in types,
-                "gaps": [_parity_gap_reason(table, merges_by_target, tables)],
+                "gaps": [_parity_gap_reason(table, merges_by_target, tables, parsed.get("streams") or {})],
             }
         )
 

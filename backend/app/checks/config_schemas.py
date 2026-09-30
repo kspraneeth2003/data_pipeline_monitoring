@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # The metrics a check measures that a person may demote from "asserted" to
 # "reported". Named after the metric rather than its threshold, because what
@@ -78,6 +78,21 @@ class BronzeToSilverParityConfig(BaseModel):
     bronzeObject: str
     silverObject: str
 
+    # The source side as a query instead of a table: the MERGE's own USING
+    # body, for a MERGE whose key comes from a joined table (an identity XREF
+    # lookup, say). Inside that query every alias is in scope, so the key that
+    # a table-only comparison cannot even name is simply one of its output
+    # columns - and key/value expressions then refer to those output columns.
+    # `bronzeObject` stays the driving table it reads, for stage and repair.
+    #
+    # Same provenance caveat as `sourceFilter`: SQL lifted from the DDL and
+    # interpolated into the statement, shown in full on the check's SQL tab.
+    # Derivation rewrites exactly two things in it, both visible there: stream
+    # references become their base tables (a stream is "changed since the last
+    # run", not the population the target accumulates), and the driving
+    # table's settle timestamp is projected as `bronzeLoadedAtColumn`.
+    bronzeQuery: str | None = None
+
     # A predicate the MERGE applies to the source, lifted from its WHERE clause
     # and applied to the source side here so both sides describe the same
     # population. Without it a filtered MERGE cannot be checked at all: the
@@ -133,6 +148,15 @@ class BronzeToSilverParityConfig(BaseModel):
     reportOnly: list[ParityMetric] = Field(default_factory=list)
 
     sampleLimit: int = Field(default=5, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _query_cannot_time_travel(self) -> "BronzeToSilverParityConfig":
+        # AT(TIMESTAMP => ...) pins a table, and a query can read several; a
+        # replay that pinned the target but not the source would compare two
+        # different instants and call the difference loss.
+        if self.bronzeQuery and self.asOfTimestamp:
+            raise ValueError("asOfTimestamp cannot be combined with bronzeQuery")
+        return self
 
 
 class Scd2IntegrityConfig(BaseModel):

@@ -106,9 +106,9 @@ BEGIN
   -- in the stream to trigger the next run - never lost. Consuming last would
   -- open a window where a change is swallowed without being resolved.
   INSERT INTO DPM_CUSTOMER_360.IDENTITY.RESOLVER_RUNS (SOURCE_SYSTEM, CHANGED_ROWS, RUN_AT)
-  SELECT 'CRM', COUNT(*), CURRENT_TIMESTAMP() FROM DPM_SRC_CRM.SILVER.CUSTOMERS_STREAM;
+  SELECT 'CRM', COUNT(*), CURRENT_TIMESTAMP() FROM DPM_SRC_CRM.SILVER.CUSTOMERS_IDENTITY_STREAM;
   INSERT INTO DPM_CUSTOMER_360.IDENTITY.RESOLVER_RUNS (SOURCE_SYSTEM, CHANGED_ROWS, RUN_AT)
-  SELECT 'LOYALTY', COUNT(*), CURRENT_TIMESTAMP() FROM DPM_SRC_LOYALTY.SILVER.MEMBERS_STREAM;
+  SELECT 'LOYALTY', COUNT(*), CURRENT_TIMESTAMP() FROM DPM_SRC_LOYALTY.SILVER.MEMBERS_IDENTITY_STREAM;
 
   -- Rebuilt in place. TRUNCATE + INSERT rather than CREATE OR REPLACE keeps
   -- the table's identity, its grants and any stream on it intact.
@@ -177,7 +177,7 @@ BEGIN
 END;
 $$;
 
--- Guarded on the silver streams. Unguarded, this resumed the warehouse every
+-- Guarded on its own silver streams. Unguarded, this resumed the warehouse every
 -- five minutes to rebuild an identical cross-reference, which alone kept the
 -- warehouse from ever auto-suspending. The WHEN is evaluated in cloud services
 -- and starts no warehouse, so the schedule only bounds latency now.
@@ -185,7 +185,7 @@ CREATE OR REPLACE TASK DPM_CUSTOMER_360.IDENTITY.TASK_RESOLVE_IDENTITY
   WAREHOUSE = DPM_PIPELINE_WH
   SCHEDULE = '5 MINUTE'
   COMMENT = 'Rebuilds the identity cross-reference that the gold layer keys on'
-  WHEN SYSTEM$STREAM_HAS_DATA('DPM_SRC_CRM.SILVER.CUSTOMERS_STREAM')
-    OR SYSTEM$STREAM_HAS_DATA('DPM_SRC_LOYALTY.SILVER.MEMBERS_STREAM')
+  WHEN SYSTEM$STREAM_HAS_DATA('DPM_SRC_CRM.SILVER.CUSTOMERS_IDENTITY_STREAM')
+    OR SYSTEM$STREAM_HAS_DATA('DPM_SRC_LOYALTY.SILVER.MEMBERS_IDENTITY_STREAM')
 AS
 CALL DPM_CUSTOMER_360.IDENTITY.SP_RESOLVE_IDENTITY();

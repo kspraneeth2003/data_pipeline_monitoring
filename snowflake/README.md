@@ -96,12 +96,14 @@ body does not read never turns off. The real cadence is set by the generator
 (every four hours), and `warehouse.sql` caps the warehouse at 30 credits a
 month.
 
-`DPM_SRC_CRM.SILVER.CUSTOMERS_STREAM` and `DPM_SRC_LOYALTY.SILVER.MEMBERS_STREAM`
-went unconsumed until the resolver started reading them, and an unread stream
-goes stale once it outlives the table's retention. Check `SHOW STREAMS` for
-`stale = true` and re-create any that are with `CREATE OR REPLACE STREAM` -
-losing their offset costs nothing, because the resolver rebuilds from the
-tables, not the streams.
+One stream, one consumer. A stream has a single offset, so when two tasks read
+it, whichever runs first empties it and the other silently misses those
+changes. The resolver therefore reads its own `CUSTOMERS_IDENTITY_STREAM` and
+`MEMBERS_IDENTITY_STREAM` rather than the silver streams it sits beside - the
+live account has a `TASK_SILVER_TO_GOLD_CUSTOMER_360` (not in this repo) that
+already consumes `CUSTOMERS_STREAM`. That same task shares
+`DPM_SRC_BILLING.SILVER.INVOICES_STREAM` with `TASK_SILVER_TO_GOLD_TRANSACTION`,
+which is exactly this bug and is still live.
 
 Refresh the mirror afterwards:
 

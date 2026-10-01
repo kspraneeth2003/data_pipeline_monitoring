@@ -59,6 +59,13 @@ CREATE STREAM IF NOT EXISTS DPM_SRC_LOYALTY.SILVER.MEMBERS_STREAM
   ON TABLE DPM_SRC_LOYALTY.SILVER.MEMBERS
   COMMENT = 'Changes to the silver member dimension, for the gold refresh';
 
+-- The identity resolver's own trigger, separate from MEMBERS_STREAM for the
+-- same reason as CUSTOMERS_IDENTITY_STREAM in the CRM silver layer: a stream
+-- consumed by two tasks loses changes to whichever runs second.
+CREATE STREAM IF NOT EXISTS DPM_SRC_LOYALTY.SILVER.MEMBERS_IDENTITY_STREAM
+  ON TABLE DPM_SRC_LOYALTY.SILVER.MEMBERS
+  COMMENT = 'Changes to the silver member dimension, consumed only by the identity resolver';
+
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS DPM_SRC_LOYALTY.SILVER.POINTS_DAILY (

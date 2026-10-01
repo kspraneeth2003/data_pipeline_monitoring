@@ -96,6 +96,13 @@ body does not read never turns off. The real cadence is set by the generator
 (every four hours), and `warehouse.sql` caps the warehouse at 30 credits a
 month.
 
+`DPM_SRC_CRM.SILVER.CUSTOMERS_STREAM` and `DPM_SRC_LOYALTY.SILVER.MEMBERS_STREAM`
+went unconsumed until the resolver started reading them, and an unread stream
+goes stale once it outlives the table's retention. Check `SHOW STREAMS` for
+`stale = true` and re-create any that are with `CREATE OR REPLACE STREAM` -
+losing their offset costs nothing, because the resolver rebuilds from the
+tables, not the streams.
+
 Refresh the mirror afterwards:
 
 ```bash

@@ -62,6 +62,24 @@ CREATE TABLE IF NOT EXISTS DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF (
   RESOLVED_AT TIMESTAMP_NTZ
 ) COMMENT = 'Identity: (source system, source id) -> individual. Must be a function, not a relation';
 
+-- What the gold individual task wakes on. The resolver rebuilds this table
+-- wholesale, so any resolver run puts every individual in the stream - which
+-- is right, because one new record can re-key people who did not change.
+CREATE STREAM IF NOT EXISTS DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF_STREAM
+  ON TABLE DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF
+  COMMENT = 'Changes to the cross-reference, for the gold individual refresh';
+
+-- One row per resolver run per source, recording how many silver changes
+-- triggered it. It exists because a stream only advances when a DML statement
+-- reads it: the resolver rebuilds from the silver tables, not the streams, so
+-- without this INSERT the trigger streams would never empty and the task would
+-- fire on every schedule tick forever.
+CREATE TABLE IF NOT EXISTS DPM_CUSTOMER_360.IDENTITY.RESOLVER_RUNS (
+  SOURCE_SYSTEM STRING NOT NULL,
+  CHANGED_ROWS NUMBER NOT NULL,
+  RUN_AT TIMESTAMP_NTZ NOT NULL
+) COMMENT = 'Identity: audit of resolver runs; its inserts are what consume the trigger streams';
+
 -- ---------------------------------------------------------------------------
 -- The resolver
 -- ---------------------------------------------------------------------------
@@ -83,6 +101,15 @@ DECLARE
   resolved INTEGER DEFAULT 0;
   individuals INTEGER DEFAULT 0;
 BEGIN
+  -- Consume the trigger streams first, before reading silver. A change landing
+  -- after this point is either picked up by the rebuild below anyway, or left
+  -- in the stream to trigger the next run - never lost. Consuming last would
+  -- open a window where a change is swallowed without being resolved.
+  INSERT INTO DPM_CUSTOMER_360.IDENTITY.RESOLVER_RUNS (SOURCE_SYSTEM, CHANGED_ROWS, RUN_AT)
+  SELECT 'CRM', COUNT(*), CURRENT_TIMESTAMP() FROM DPM_SRC_CRM.SILVER.CUSTOMERS_STREAM;
+  INSERT INTO DPM_CUSTOMER_360.IDENTITY.RESOLVER_RUNS (SOURCE_SYSTEM, CHANGED_ROWS, RUN_AT)
+  SELECT 'LOYALTY', COUNT(*), CURRENT_TIMESTAMP() FROM DPM_SRC_LOYALTY.SILVER.MEMBERS_STREAM;
+
   -- Rebuilt in place. TRUNCATE + INSERT rather than CREATE OR REPLACE keeps
   -- the table's identity, its grants and any stream on it intact.
   TRUNCATE TABLE DPM_CUSTOMER_360.IDENTITY.NORMALIZE_EMAIL;
@@ -150,9 +177,15 @@ BEGIN
 END;
 $$;
 
+-- Guarded on the silver streams. Unguarded, this resumed the warehouse every
+-- five minutes to rebuild an identical cross-reference, which alone kept the
+-- warehouse from ever auto-suspending. The WHEN is evaluated in cloud services
+-- and starts no warehouse, so the schedule only bounds latency now.
 CREATE OR REPLACE TASK DPM_CUSTOMER_360.IDENTITY.TASK_RESOLVE_IDENTITY
   WAREHOUSE = DPM_PIPELINE_WH
   SCHEDULE = '5 MINUTE'
   COMMENT = 'Rebuilds the identity cross-reference that the gold layer keys on'
+  WHEN SYSTEM$STREAM_HAS_DATA('DPM_SRC_CRM.SILVER.CUSTOMERS_STREAM')
+    OR SYSTEM$STREAM_HAS_DATA('DPM_SRC_LOYALTY.SILVER.MEMBERS_STREAM')
 AS
 CALL DPM_CUSTOMER_360.IDENTITY.SP_RESOLVE_IDENTITY();

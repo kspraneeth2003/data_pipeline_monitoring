@@ -49,6 +49,7 @@ Order: suspend running tasks first, then silver before bronze (bronze holds the
 tasks that MERGE into silver), then identity before gold before BI.
 
 ```sql
+@warehouse.sql
 @dpm_src_crm/silver.sql        @dpm_src_crm/bronze.sql
 @dpm_src_billing/silver.sql    @dpm_src_billing/bronze.sql
 @dpm_src_inventory/silver.sql  @dpm_src_inventory/bronze.sql
@@ -81,6 +82,19 @@ ALTER TASK DPM_SRC_LOYALTY.BRONZE.TASK_BRONZE_TO_SILVER_MEMBERS_OPEN RESUME;
 ALTER TASK DPM_CUSTOMER_360.GOLD.TASK_SILVER_TO_GOLD_EMAIL RESUME;
 -- ...then every other task.
 ```
+
+### Cost
+
+Every scheduled task except the generator is guarded with
+`WHEN SYSTEM$STREAM_HAS_DATA(...)`, which is evaluated without a warehouse, so
+an idle pipeline costs nothing. Keep it that way: a single unguarded task on a
+one-minute schedule resumes the warehouse 1,440 times a day and keeps it from
+ever suspending - about 24 credits a day on an X-Small. Two tasks were like
+that until 2026-10-01 and are the likely cause of the account's credit drain. A stream
+only empties when a DML statement reads it, so a guard on a stream the task
+body does not read never turns off. The real cadence is set by the generator
+(every four hours), and `warehouse.sql` caps the warehouse at 30 credits a
+month.
 
 Refresh the mirror afterwards:
 

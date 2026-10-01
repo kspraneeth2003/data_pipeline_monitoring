@@ -242,9 +242,14 @@ BEGIN
 END;
 $$;
 
+-- Every four hours rather than hourly. Each run wakes the whole pipeline - six
+-- bronze tasks, the resolver, five gold tasks and the BI refresh - and every
+-- warehouse resume bills at least a minute, so the cascade, not the generator
+-- itself, is what this schedule really prices. Four hours still exercises
+-- every hop several times a day.
 CREATE OR REPLACE TASK DPM_CUSTOMER_360.GOLD.TASK_GENERATE_TEST_DATA
   WAREHOUSE = DPM_PIPELINE_WH
-  SCHEDULE = '60 MINUTE'
-  COMMENT = 'Hourly test-data generator keeping the whole bronze -> silver -> gold -> BI pipeline exercised'
+  SCHEDULE = '240 MINUTE'
+  COMMENT = 'Four-hourly test-data generator keeping the whole bronze -> silver -> gold -> BI pipeline exercised'
 AS
 CALL DPM_CUSTOMER_360.GOLD.SP_GENERATE_TEST_DATA(3, 2, 2, 2, 1, 7);

@@ -112,9 +112,17 @@ CREATE STREAM IF NOT EXISTS DPM_CUSTOMER_360.GOLD.LOYALTY_DAILY_STREAM
 -- Silver -> Gold
 -- ---------------------------------------------------------------------------
 
+-- Guarded on the cross-reference stream, not on the CRM and loyalty silver
+-- streams directly: those belong to the resolver, and the individual has to
+-- wait for the resolver anyway or it merges against a stale cross-reference.
+-- Unguarded, this task resumed the warehouse every minute around the clock -
+-- the bulk of the account's credit burn - to rewrite unchanged rows. It cannot
+-- simply be chained AFTER the resolver, because a task graph must live in a
+-- single schema.
 CREATE OR REPLACE TASK DPM_CUSTOMER_360.GOLD.TASK_SILVER_TO_GOLD_INDIVIDUAL
   WAREHOUSE = DPM_PIPELINE_WH
   SCHEDULE = '1 MINUTE'
+  WHEN SYSTEM$STREAM_HAS_DATA('DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF_STREAM')
 AS
 MERGE INTO DPM_CUSTOMER_360.GOLD.INDIVIDUAL tgt
 USING (
@@ -137,6 +145,11 @@ USING (
    -- Current versions only, or the dimension's history fans the join out and
    -- one member with three versions contributes three times.
    AND m.IS_CURRENT = TRUE
+  -- Reading the stream here is what advances it. The resolver rebuilds the
+  -- whole cross-reference, so this is every individual on any change.
+  WHERE x.INDIVIDUAL_ID IN (
+    SELECT INDIVIDUAL_ID FROM DPM_CUSTOMER_360.IDENTITY.INDIVIDUAL_XREF_STREAM
+  )
   GROUP BY x.INDIVIDUAL_ID
 ) src
 ON tgt.INDIVIDUAL_ID = src.INDIVIDUAL_ID
